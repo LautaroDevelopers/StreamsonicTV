@@ -60,11 +60,14 @@ fun PairingScreen(
                 android.util.Log.d("PairingScreen", "Using deviceId: $deviceId (local Android ID)")
                 
                 // Start polling for authorization
-                // Use local deviceId (Android ID) since backend doesn't return it
+                // Use the deviceId returned by the backend, as that's what the code is linked to
+                val pollingDeviceId = backendDeviceId ?: deviceId
+                android.util.Log.d("PairingScreen", "Starting poll with deviceId: $pollingDeviceId")
+
                 scope.launch {
                     while (true) {
                         delay(3000)
-                        repository.checkTvCodeStatus(deviceId).fold(
+                        repository.checkTvCodeStatus(pollingDeviceId).fold(
                             onSuccess = { status ->
                                 android.util.Log.d("PairingScreen", "Poll response - status: ${status.status}, token: ${status.token != null}")
                                 if (status.status == "authorized" && status.token != null) {

@@ -24,12 +24,12 @@ class StreamsonicRepository(
                 val response = api.generateTvCode(
                     GenerateTvCodeRequest(deviceId, deviceName)
                 )
-                if (response.success && response.data != null) {
+                if (response.success && response.data?.deviceId != null) {
                     // Save the device_id returned by backend (NOT the local Android ID)
                     prefs.saveDeviceId(response.data.deviceId)
                     Result.success(response)
                 } else {
-                    Result.failure(Exception(response.message ?: "Error generando código"))
+                    Result.failure(Exception(response.message ?: "Error generando código o el deviceId es nulo"))
                 }
             } catch (e: Exception) {
                 Result.failure(e)
