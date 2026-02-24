@@ -79,3 +79,24 @@ data class ProfileResponse(
     val success: Boolean,
     val data: UserProfile?
 )
+
+data class Favorite(
+    val id: Int,
+    @SerializedName("user_id") val userId: Int,
+    @SerializedName("item_id") val itemId: Int,
+    @SerializedName("item_type") val itemType: String
+)
+
+data class FavoritesResponse(
+    val success: Boolean,
+    val data: List<Favorite>?
+)
+
+data class CheckFavoriteResponse(
+    val success: Boolean,
+    val data: CheckFavoriteData?
+)
+
+data class CheckFavoriteData(
+    val isFavorite: Boolean
+)

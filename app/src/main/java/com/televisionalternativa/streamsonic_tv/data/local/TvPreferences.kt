@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
@@ -18,6 +19,8 @@ class TvPreferences(private val context: Context) {
         private val AUTH_TOKEN = stringPreferencesKey("auth_token")
         private val DEVICE_ID = stringPreferencesKey("device_id")
         private val USER_ID = stringPreferencesKey("user_id")
+        private val LAST_CHANNEL_INDEX = intPreferencesKey("last_channel_index")
+        private val LAST_CONTENT_TYPE = stringPreferencesKey("last_content_type") // "channel" or "station"
     }
     
     val authToken: Flow<String?> = context.dataStore.data.map { prefs ->
@@ -39,6 +42,10 @@ class TvPreferences(private val context: Context) {
     suspend fun getDeviceIdOnce(): String? {
         return context.dataStore.data.first()[DEVICE_ID]
     }
+
+    suspend fun getUserIdOnce(): String? {
+        return context.dataStore.data.first()[USER_ID]
+    }
     
     suspend fun saveAuthData(token: String, userId: Int, deviceId: String) {
         context.dataStore.edit { prefs ->
@@ -52,6 +59,21 @@ class TvPreferences(private val context: Context) {
         context.dataStore.edit { prefs ->
             prefs[DEVICE_ID] = deviceId
         }
+    }
+
+    suspend fun saveLastChannel(index: Int, contentType: String) {
+        context.dataStore.edit { prefs ->
+            prefs[LAST_CHANNEL_INDEX] = index
+            prefs[LAST_CONTENT_TYPE] = contentType
+        }
+    }
+
+    suspend fun getLastChannelIndex(): Int {
+        return context.dataStore.data.first()[LAST_CHANNEL_INDEX] ?: 0
+    }
+
+    suspend fun getLastContentType(): String {
+        return context.dataStore.data.first()[LAST_CONTENT_TYPE] ?: "channel"
     }
     
     suspend fun clearAuth() {

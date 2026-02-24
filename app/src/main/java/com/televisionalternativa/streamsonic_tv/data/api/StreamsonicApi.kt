@@ -25,9 +25,40 @@ interface StreamsonicApi {
     
     @GET("api/auth/profile")
     suspend fun getProfile(): ProfileResponse
+
+    // Favorites
+    @GET("api/favorites/{userId}")
+    suspend fun getFavorites(
+        @Path("userId") userId: String
+    ): FavoritesResponse
+
+    @POST("api/favorites")
+    suspend fun addFavorite(
+        @Body request: AddFavoriteRequest
+    ): ApiResponse<Any>
+
+    @DELETE("api/favorites/{userId}/{itemType}/{itemId}")
+    suspend fun deleteFavorite(
+        @Path("userId") userId: String,
+        @Path("itemType") itemType: String,
+        @Path("itemId") itemId: Int
+    ): ApiResponse<Any>
+
+    @GET("api/favorites/check/{userId}/{itemType}/{itemId}")
+    suspend fun checkFavorite(
+        @Path("userId") userId: String,
+        @Path("itemType") itemType: String,
+        @Path("itemId") itemId: Int
+    ): CheckFavoriteResponse
 }
 
 data class GenerateTvCodeRequest(
     val device_id: String,
     val device_name: String
+)
+
+data class AddFavoriteRequest(
+    val user_id: String,
+    val item_id: Int,
+    val item_type: String
 )

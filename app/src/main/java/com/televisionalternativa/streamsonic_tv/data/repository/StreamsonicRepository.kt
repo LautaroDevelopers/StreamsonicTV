@@ -1,5 +1,6 @@
 package com.televisionalternativa.streamsonic_tv.data.repository
 
+import com.televisionalternativa.streamsonic_tv.data.api.AddFavoriteRequest
 import com.televisionalternativa.streamsonic_tv.data.api.ApiClient
 import com.televisionalternativa.streamsonic_tv.data.api.GenerateTvCodeRequest
 import com.televisionalternativa.streamsonic_tv.data.local.TvPreferences
@@ -8,7 +9,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 class StreamsonicRepository(
-    private val prefs: TvPreferences
+    val prefs: TvPreferences
 ) {
     private val api = ApiClient.api
     
@@ -25,7 +26,6 @@ class StreamsonicRepository(
                     GenerateTvCodeRequest(deviceId, deviceName)
                 )
                 if (response.success && response.data?.deviceId != null) {
-                    // Save the device_id returned by backend (NOT the local Android ID)
                     prefs.saveDeviceId(response.data.deviceId)
                     Result.success(response)
                 } else {
@@ -42,7 +42,6 @@ class StreamsonicRepository(
             try {
                 val response = api.checkTvCodeStatus(deviceId)
                 if (response.success && response.status == "authorized" && response.token != null) {
-                    // Save auth data
                     prefs.saveAuthData(response.token, 0, deviceId)
                     ApiClient.setAuthToken(response.token)
                 }
@@ -103,6 +102,65 @@ class StreamsonicRepository(
             }
         }
     }
+
+    suspend fun getFavorites(): Result<List<Favorite>> {
+        return withContext(Dispatchers.IO) {
+            try {
+                val userId = prefs.getUserIdOnce() ?: "0"
+                val response = api.getFavorites(userId)
+                if (response.success && response.data != null) {
+                    Result.success(response.data)
+                } else {
+                    Result.success(emptyList())
+                }
+            } catch (e: Exception) {
+                Result.success(emptyList())
+            }
+        }
+    }
+
+    suspend fun addFavorite(itemId: Int, itemType: String): Result<Boolean> {
+        return withContext(Dispatchers.IO) {
+            try {
+                val userId = prefs.getUserIdOnce() ?: "0"
+                val response = api.addFavorite(AddFavoriteRequest(userId, itemId, itemType))
+                Result.success(response.success)
+            } catch (e: Exception) {
+                Result.failure(e)
+            }
+        }
+    }
+
+    suspend fun deleteFavorite(itemId: Int, itemType: String): Result<Boolean> {
+        return withContext(Dispatchers.IO) {
+            try {
+                val userId = prefs.getUserIdOnce() ?: "0"
+                val response = api.deleteFavorite(userId, itemType, itemId)
+                Result.success(response.success)
+            } catch (e: Exception) {
+                Result.failure(e)
+            }
+        }
+    }
+
+    suspend fun checkFavorite(itemId: Int, itemType: String): Result<Boolean> {
+        return withContext(Dispatchers.IO) {
+            try {
+                val userId = prefs.getUserIdOnce() ?: "0"
+                val response = api.checkFavorite(userId, itemType, itemId)
+                Result.success(response.data?.isFavorite ?: false)
+            } catch (e: Exception) {
+                Result.success(false)
+            }
+        }
+    }
+
+    suspend fun saveLastChannel(index: Int, contentType: String) {
+        prefs.saveLastChannel(index, contentType)
+    }
+
+    suspend fun getLastChannelIndex(): Int = prefs.getLastChannelIndex()
+    suspend fun getLastContentType(): String = prefs.getLastContentType()
     
     suspend fun logout() {
         prefs.clearAuth()
