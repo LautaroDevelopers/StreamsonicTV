@@ -1,5 +1,8 @@
 package com.televisionalternativa.streamsonic_tv.ui.screens.home
 
+import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.BorderStroke
@@ -42,6 +45,10 @@ import com.televisionalternativa.streamsonic_tv.data.model.Channel
 import com.televisionalternativa.streamsonic_tv.data.model.Station
 import com.televisionalternativa.streamsonic_tv.data.repository.StreamsonicRepository
 import com.televisionalternativa.streamsonic_tv.ui.theme.*
+import com.televisionalternativa.streamsonic_tv.update.UpdateCheckResult
+import com.televisionalternativa.streamsonic_tv.update.UpdateChecker
+import com.televisionalternativa.streamsonic_tv.update.UpdateDialog
+import com.televisionalternativa.streamsonic_tv.update.UpdateInfo
 import kotlinx.coroutines.launch
 
 // Menu items enum
@@ -87,8 +94,44 @@ fun HomeScreen(
     // Hero state - item actualmente enfocado
     var focusedChannel by remember { mutableStateOf<Channel?>(null) }
     var focusedStation by remember { mutableStateOf<Station?>(null) }
+
+    // Update state
+    var updateInfo by remember { mutableStateOf<UpdateInfo?>(null) }
+    var showUpdateDialog by remember { mutableStateOf(false) }
+    var snoozedUntil by remember { mutableStateOf(0L) }
     
     val scope = rememberCoroutineScope()
+
+    // Check for updates on launch
+    LaunchedEffect(Unit) {
+        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+        val hasNetwork = cm?.getNetworkCapabilities(cm.activeNetwork)
+            ?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
+
+        if (hasNetwork && System.currentTimeMillis() > snoozedUntil) {
+            UpdateChecker.checkForUpdate(context) { result ->
+                when (result) {
+                    is UpdateCheckResult.UpdateAvailable -> {
+                        updateInfo = result.info
+                        showUpdateDialog = true
+                    }
+                    else -> { /* No update or error, silently ignore */ }
+                }
+            }
+        }
+    }
+
+    // Update dialog
+    if (showUpdateDialog && updateInfo != null) {
+        UpdateDialog(
+            updateInfo = updateInfo!!,
+            onDismiss = { showUpdateDialog = false },
+            onSnooze = {
+                snoozedUntil = System.currentTimeMillis() + 3_600_000L
+                showUpdateDialog = false
+            }
+        )
+    }
     
     fun loadContent() {
         scope.launch {
