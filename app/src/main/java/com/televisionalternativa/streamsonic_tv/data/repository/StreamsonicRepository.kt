@@ -1,5 +1,7 @@
 package com.televisionalternativa.streamsonic_tv.data.repository
 
+import android.util.Base64
+import android.util.Log
 import com.televisionalternativa.streamsonic_tv.data.api.AddFavoriteRequest
 import com.televisionalternativa.streamsonic_tv.data.api.ApiClient
 import com.televisionalternativa.streamsonic_tv.data.api.GenerateTvCodeRequest
@@ -7,15 +9,50 @@ import com.televisionalternativa.streamsonic_tv.data.local.TvPreferences
 import com.televisionalternativa.streamsonic_tv.data.model.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
 
 class StreamsonicRepository(
     val prefs: TvPreferences
 ) {
     private val api = ApiClient.api
+
+    companion object {
+        private const val TAG = "StreamsonicRepository"
+    }
+
+    /**
+     * Decode JWT payload and extract the user ID.
+     * JWT format: header.payload.signature — payload is base64url-encoded JSON.
+     * The API embeds { id, username, email, role, ... } in the payload.
+     */
+    private fun extractUserIdFromToken(token: String): Int {
+        return try {
+            val parts = token.split(".")
+            if (parts.size != 3) return 0
+            val payload = String(Base64.decode(parts[1], Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP))
+            val json = JSONObject(payload)
+            val userId = json.optInt("id", 0)
+            Log.d(TAG, "Extracted userId=$userId from JWT")
+            userId
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to decode JWT: ${e.message}")
+            0
+        }
+    }
     
     suspend fun initAuth() {
         prefs.getAuthTokenOnce()?.let { token ->
             ApiClient.setAuthToken(token)
+            // If userId wasn't saved correctly before (was "0"), fix it now
+            val storedUserId = prefs.getUserIdOnce()
+            if (storedUserId == null || storedUserId == "0") {
+                val userId = extractUserIdFromToken(token)
+                if (userId > 0) {
+                    val deviceId = prefs.getDeviceIdOnce() ?: ""
+                    prefs.saveAuthData(token, userId, deviceId)
+                    Log.d(TAG, "Fixed userId from JWT on init: $userId")
+                }
+            }
         }
     }
     
@@ -42,7 +79,8 @@ class StreamsonicRepository(
             try {
                 val response = api.checkTvCodeStatus(deviceId)
                 if (response.success && response.status == "authorized" && response.token != null) {
-                    prefs.saveAuthData(response.token, 0, deviceId)
+                    val userId = extractUserIdFromToken(response.token)
+                    prefs.saveAuthData(response.token, userId, deviceId)
                     ApiClient.setAuthToken(response.token)
                 }
                 Result.success(response)
@@ -54,7 +92,8 @@ class StreamsonicRepository(
     
     suspend fun saveToken(token: String) {
         val deviceId = prefs.getDeviceIdOnce() ?: ""
-        prefs.saveAuthData(token, 0, deviceId)
+        val userId = extractUserIdFromToken(token)
+        prefs.saveAuthData(token, userId, deviceId)
         ApiClient.setAuthToken(token)
     }
     
