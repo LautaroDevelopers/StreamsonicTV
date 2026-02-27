@@ -110,7 +110,13 @@ private data class SearchResult(
 )
 
 // Focus areas inside the panel
-private enum class PanelFocus { TABS, CONTENT, ITEMS }
+private enum class PanelFocus { TABS, CONTENT }
+
+// Panel navigation levels (for sliding panel design)
+// CONTENT: Shows all channels/radios
+// CATEGORIES: Shows category list
+// FILTERED: Shows channels/radios filtered by selected category
+private enum class PanelLevel { CONTENT, CATEGORIES, FILTERED }
 
 // ============================================================
 // Main PlayerScreen
@@ -522,9 +528,11 @@ private fun TwoPanelOverlay(
     // ===== STATE =====
     var tabIndex by remember { mutableIntStateOf(initialTab) }
     var focus by remember { mutableStateOf(PanelFocus.TABS) }
-    var contentIndex by remember { mutableIntStateOf(0) } // selected in content list
-    var itemIndex by remember { mutableIntStateOf(0) } // selected in items panel
-    var showItemsPanel by remember { mutableStateOf(false) }
+    var contentIndex by remember { mutableIntStateOf(0) } // selected in content/category list
+
+    // Panel sliding levels (new design)
+    var panelLevel by remember { mutableStateOf(PanelLevel.CONTENT) }
+    var selectedCategory by remember { mutableStateOf<String?>(null) }
 
     // Search
     var searchQuery by remember { mutableStateOf("") }
@@ -535,12 +543,10 @@ private fun TwoPanelOverlay(
 
     // List states
     val contentListState = rememberLazyListState()
-    val itemListState = rememberLazyListState()
 
     // Focus requesters
     val tabsFR = remember { FocusRequester() }
     val contentFR = remember { FocusRequester() }
-    val itemsFR = remember { FocusRequester() }
     val searchInputFR = remember { FocusRequester() }
     val searchResultsFR = remember { FocusRequester() }
 
@@ -590,9 +596,6 @@ private fun TwoPanelOverlay(
         }
     }
 
-    // Is current tab one that has categories → items (2-level)?
-    val isTwoLevel = tabIndex == 0 || tabIndex == 1
-
     // ===== FOCUS MANAGEMENT =====
     LaunchedEffect(focus, searchFocusOnInput) {
         delay(80)
@@ -604,7 +607,6 @@ private fun TwoPanelOverlay(
                     else if (tabIndex == 3 && !searchFocusOnInput) searchResultsFR.requestFocus()
                     else contentFR.requestFocus()
                 }
-                PanelFocus.ITEMS -> itemsFR.requestFocus()
             }
         } catch (_: Exception) { }
     }
@@ -612,29 +614,36 @@ private fun TwoPanelOverlay(
     // Reset content index when tab changes
     LaunchedEffect(tabIndex) {
         contentIndex = 0
-        itemIndex = 0
-        showItemsPanel = false
+        panelLevel = PanelLevel.CONTENT
+        selectedCategory = null
         searchFocusOnInput = true
-
-        // For Canales/Radio, try to find current playing item's category
-        if (isTwoLevel) {
-            val targetType = if (tabIndex == 0) "channel" else "station"
-            if (contentType == targetType && activeCategories.isNotEmpty()) {
-                var found = false
-                activeCategories.forEachIndexed { catIdx, cat ->
-                    val items = activeGrouped[cat] ?: emptyList()
-                    items.forEach { indexed ->
-                        if (indexed.index == currentIndex && !found) {
-                            contentIndex = catIdx
-                            found = true
-                        }
-                    }
-                }
-            }
-        }
 
         // Refresh favs
         if (tabIndex == 2) onRefreshFavorites()
+    }
+
+    // Determine if current tab supports categories (Canales=0, Radio=1)
+    val hasCategories = tabIndex == 0 || tabIndex == 1
+
+    // Get filtered content based on panel level
+    val displayItems: List<IndexedValue<Any>> = remember(tabIndex, panelLevel, selectedCategory, channels, stations) {
+        when {
+            tabIndex == 0 -> { // Canales
+                if (panelLevel == PanelLevel.FILTERED && selectedCategory != null) {
+                    groupedChannels[selectedCategory] ?: emptyList()
+                } else {
+                    channels.withIndex().toList()
+                }
+            }
+            tabIndex == 1 -> { // Radio
+                if (panelLevel == PanelLevel.FILTERED && selectedCategory != null) {
+                    groupedStations[selectedCategory] ?: emptyList()
+                } else {
+                    stations.withIndex().toList()
+                }
+            }
+            else -> emptyList()
+        }
     }
 
     // ===== UI =====
@@ -782,16 +791,17 @@ private fun TwoPanelOverlay(
                         .background(CardBorder.copy(alpha = 0.3f))
                 )
 
-                // ---------- CONTENT AREA ----------
+                // ---------- CONTENT AREA (changes based on panelLevel) ----------
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
                         .weight(1f)
                 ) {
                     when (tabIndex) {
-                        // Canales / Radio → show categories
+                        // Canales / Radio → 3-level: all content | categories | filtered
                         0, 1 -> {
                             val accentColor = if (tabIndex == 0) CyanGlow else PurpleGlow
+                            val isChannel = tabIndex == 0
 
                             Box(
                                 modifier = Modifier
@@ -801,37 +811,114 @@ private fun TwoPanelOverlay(
                                     .onKeyEvent { event ->
                                         if (event.nativeKeyEvent.action == KeyEvent.ACTION_DOWN && focus == PanelFocus.CONTENT) {
                                             when (event.nativeKeyEvent.keyCode) {
-                                                KeyEvent.KEYCODE_BACK, KeyEvent.KEYCODE_DPAD_LEFT -> {
-                                                    focus = PanelFocus.TABS
+                                                KeyEvent.KEYCODE_BACK -> {
+                                                    when (panelLevel) {
+                                                        PanelLevel.CONTENT -> {
+                                                            focus = PanelFocus.TABS
+                                                        }
+                                                        PanelLevel.CATEGORIES -> {
+                                                            focus = PanelFocus.TABS
+                                                        }
+                                                        PanelLevel.FILTERED -> {
+                                                            panelLevel = PanelLevel.CATEGORIES
+                                                            contentIndex = 0
+                                                        }
+                                                    }
+                                                    true
+                                                }
+                                                KeyEvent.KEYCODE_DPAD_LEFT -> {
+                                                    when (panelLevel) {
+                                                        PanelLevel.CONTENT -> {
+                                                            // Go to categories
+                                                            panelLevel = PanelLevel.CATEGORIES
+                                                            contentIndex = 0
+                                                        }
+                                                        PanelLevel.CATEGORIES -> {
+                                                            focus = PanelFocus.TABS
+                                                        }
+                                                        PanelLevel.FILTERED -> {
+                                                            panelLevel = PanelLevel.CATEGORIES
+                                                            contentIndex = 0
+                                                        }
+                                                    }
+                                                    true
+                                                }
+                                                KeyEvent.KEYCODE_DPAD_RIGHT -> {
+                                                    when (panelLevel) {
+                                                        PanelLevel.CONTENT -> {
+                                                            // Go to categories
+                                                            panelLevel = PanelLevel.CATEGORIES
+                                                            contentIndex = 0
+                                                        }
+                                                        PanelLevel.CATEGORIES -> {
+                                                            // Go to filtered content
+                                                            val cat = activeCategories.getOrNull(contentIndex)
+                                                            if (cat != null) {
+                                                                selectedCategory = cat
+                                                                panelLevel = PanelLevel.FILTERED
+                                                            }
+                                                        }
+                                                        PanelLevel.FILTERED -> {
+                                                            // Already in filtered, do nothing or could play
+                                                        }
+                                                    }
                                                     true
                                                 }
                                                 KeyEvent.KEYCODE_DPAD_UP -> {
+                                                    val maxIdx = when (panelLevel) {
+                                                        PanelLevel.CONTENT -> displayItems.size - 1
+                                                        PanelLevel.CATEGORIES -> activeCategories.size - 1
+                                                        PanelLevel.FILTERED -> displayItems.size - 1
+                                                    }
                                                     if (contentIndex > 0) {
                                                         contentIndex--
                                                         scope.launch {
-                                                            contentListState.animateScrollToItem(
-                                                                (contentIndex - 2).coerceAtLeast(0)
-                                                            )
+                                                            contentListState.animateScrollToItem((contentIndex - 2).coerceAtLeast(0))
                                                         }
                                                     }
                                                     true
                                                 }
                                                 KeyEvent.KEYCODE_DPAD_DOWN -> {
-                                                    if (contentIndex < activeCategories.size - 1) {
+                                                    val maxIdx = when (panelLevel) {
+                                                        PanelLevel.CONTENT -> displayItems.size - 1
+                                                        PanelLevel.CATEGORIES -> activeCategories.size - 1
+                                                        PanelLevel.FILTERED -> displayItems.size - 1
+                                                    }
+                                                    if (contentIndex < maxIdx) {
                                                         contentIndex++
                                                         scope.launch {
-                                                            contentListState.animateScrollToItem(
-                                                                (contentIndex - 2).coerceAtLeast(0)
-                                                            )
+                                                            contentListState.animateScrollToItem((contentIndex - 2).coerceAtLeast(0))
                                                         }
                                                     }
                                                     true
                                                 }
-                                                KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
-                                                    if (selectedCatItems.isNotEmpty()) {
-                                                        itemIndex = 0
-                                                        showItemsPanel = true
-                                                        focus = PanelFocus.ITEMS
+                                                KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
+                                                    when (panelLevel) {
+                                                        PanelLevel.CONTENT -> {
+                                                            // Play the selected item
+                                                            val item = displayItems.getOrNull(contentIndex)
+                                                            if (item != null) {
+                                                                val type = if (isChannel) "channel" else "station"
+                                                                onItemSelect(type, item.index)
+                                                            }
+                                                        }
+                                                        PanelLevel.CATEGORIES -> {
+                                                            // Go to filtered content
+                                                            val cat = activeCategories.getOrNull(contentIndex)
+                                                            if (cat != null) {
+                                                                selectedCategory = cat
+                                                                panelLevel = PanelLevel.FILTERED
+                                                                contentIndex = 0
+                                                            }
+                                                        }
+                                                        PanelLevel.FILTERED -> {
+                                                            // Play the selected item
+                                                            val item = displayItems.getOrNull(contentIndex)
+                                                            if (item != null) {
+                                                                val type = if (isChannel) "channel" else "station"
+                                                                onItemSelect(type, item.index)
+                                                            }
+                                                        }
                                                     }
                                                     true
                                                 }
@@ -840,31 +927,45 @@ private fun TwoPanelOverlay(
                                         } else false
                                     }
                             ) {
+                                // Render content based on panelLevel
                                 Column(
                                     modifier = Modifier
                                         .fillMaxSize()
                                         .padding(12.dp)
                                 ) {
+                                    // Header
                                     Row(
                                         modifier = Modifier.padding(vertical = 8.dp),
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
                                         Icon(
-                                            Icons.Default.Category,
+                                            when (panelLevel) {
+                                                PanelLevel.CONTENT -> if (isChannel) Icons.Default.LiveTv else Icons.Default.Radio
+                                                PanelLevel.CATEGORIES -> Icons.Default.Category
+                                                PanelLevel.FILTERED -> if (isChannel) Icons.Default.LiveTv else Icons.Default.Radio
+                                            },
                                             contentDescription = null,
                                             tint = accentColor,
                                             modifier = Modifier.size(18.dp)
                                         )
                                         Spacer(modifier = Modifier.width(8.dp))
                                         Text(
-                                            "Categorías",
+                                            when (panelLevel) {
+                                                PanelLevel.CONTENT -> if (isChannel) "Todos los Canales" else "Todas las Estaciones"
+                                                PanelLevel.CATEGORIES -> "Categorías"
+                                                PanelLevel.FILTERED -> selectedCategory ?: ""
+                                            },
                                             fontSize = 14.sp,
                                             fontWeight = FontWeight.Bold,
                                             color = TextPrimary
                                         )
                                         Spacer(modifier = Modifier.weight(1f))
                                         Text(
-                                            "${activeCategories.size}",
+                                            when (panelLevel) {
+                                                PanelLevel.CONTENT -> "${displayItems.size}"
+                                                PanelLevel.CATEGORIES -> "${activeCategories.size}"
+                                                PanelLevel.FILTERED -> "${displayItems.size}"
+                                            },
                                             fontSize = 12.sp,
                                             color = TextMuted
                                         )
@@ -875,13 +976,45 @@ private fun TwoPanelOverlay(
                                         verticalArrangement = Arrangement.spacedBy(3.dp),
                                         modifier = Modifier.fillMaxSize()
                                     ) {
-                                        itemsIndexed(activeCategories) { index, cat ->
-                                            CategoryRow(
-                                                name = cat,
-                                                count = activeGrouped[cat]?.size ?: 0,
-                                                isSelected = index == contentIndex && focus == PanelFocus.CONTENT,
-                                                accentColor = accentColor
-                                            )
+                                        when (panelLevel) {
+                                            PanelLevel.CONTENT, PanelLevel.FILTERED -> {
+                                                itemsIndexed(displayItems) { index, indexed ->
+                                                    val item = indexed.value
+                                                    val name: String
+                                                    val logoUrl: String?
+                                                    val isCurrent: Boolean
+                                                    if (isChannel) {
+                                                        val ch = item as Channel
+                                                        name = ch.name
+                                                        logoUrl = ch.imageUrl
+                                                        isCurrent = index == currentIndex && contentType == "channel"
+                                                    } else {
+                                                        val st = item as Station
+                                                        name = st.name
+                                                        logoUrl = st.imageUrl
+                                                        isCurrent = index == currentIndex && contentType == "station"
+                                                    }
+                                                    ItemRow(
+                                                        number = index + 1,
+                                                        name = name,
+                                                        logoUrl = logoUrl,
+                                                        imageLoader = imageLoader,
+                                                        isSelected = index == contentIndex && focus == PanelFocus.CONTENT,
+                                                        isCurrent = isCurrent,
+                                                        accentColor = accentColor
+                                                    )
+                                                }
+                                            }
+                                            PanelLevel.CATEGORIES -> {
+                                                itemsIndexed(activeCategories) { index, cat ->
+                                                    CategoryRow(
+                                                        name = cat,
+                                                        count = activeGrouped[cat]?.size ?: 0,
+                                                        isSelected = index == contentIndex && focus == PanelFocus.CONTENT,
+                                                        accentColor = accentColor
+                                                    )
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -1159,131 +1292,18 @@ private fun TwoPanelOverlay(
                         .padding(8.dp),
                     contentAlignment = Alignment.Center
                 ) {
-                    val hint = when (focus) {
-                        PanelFocus.TABS -> "▲▼ Navegar • ► Entrar • BACK Cerrar"
-                        PanelFocus.CONTENT -> if (isTwoLevel) "▲▼ Categoría • ► Items • ◄ Volver" else "▲▼ Navegar • OK Reproducir • ◄ Volver"
-                        PanelFocus.ITEMS -> "▲▼ Navegar • OK Reproducir • ◄ Volver"
+                    val hint = when {
+                        focus == PanelFocus.TABS -> "▲▼ Navegar • ►/OK Abrir • BACK Cerrar"
+                        tabIndex == 0 || tabIndex == 1 -> when (panelLevel) {
+                            PanelLevel.CONTENT -> "◄ Categorías • ▲▼ Navegar • OK Reproducir"
+                            PanelLevel.CATEGORIES -> "► Atras • ▲▼ Categoría • OK Seleccionar"
+                            PanelLevel.FILTERED -> "◄ Categorías • ▲▼ Navegar • OK Reproducir"
+                        }
+                        tabIndex == 2 -> "▲▼ Navegar • OK Reproducir • ◄ Volver"
+                        tabIndex == 3 -> "▲▼ Resultados • OK Reproducir"
+                        else -> ""
                     }
                     Text(hint, fontSize = 11.sp, color = TextMuted)
-                }
-            }
-
-            // ========================================
-            // PANEL B: Items (slides in for Canales/Radio)
-            // ========================================
-            AnimatedVisibility(
-                visible = showItemsPanel && isTwoLevel,
-                enter = slideInHorizontally(initialOffsetX = { it }) + fadeIn(),
-                exit = slideOutHorizontally(targetOffsetX = { it }) + fadeOut()
-            ) {
-                val isChMode = tabIndex == 0
-                val accentColor = if (isChMode) CyanGlow else PurpleGlow
-
-                Box(
-                    modifier = Modifier
-                        .fillMaxHeight()
-                        .width(380.dp)
-                        .background(
-                            Brush.horizontalGradient(
-                                colors = listOf(
-                                    DarkBackground.copy(alpha = 0.95f),
-                                    DarkBackground.copy(alpha = 0.88f),
-                                    Color.Transparent
-                                ),
-                                startX = 0f,
-                                endX = 500f
-                            )
-                        )
-                        .focusRequester(itemsFR)
-                        .focusable()
-                        .onKeyEvent { event ->
-                            if (event.nativeKeyEvent.action == KeyEvent.ACTION_DOWN && focus == PanelFocus.ITEMS) {
-                                when (event.nativeKeyEvent.keyCode) {
-                                    KeyEvent.KEYCODE_BACK, KeyEvent.KEYCODE_DPAD_LEFT -> {
-                                        showItemsPanel = false
-                                        focus = PanelFocus.CONTENT
-                                        true
-                                    }
-                                    KeyEvent.KEYCODE_DPAD_UP -> {
-                                        if (itemIndex > 0) {
-                                            itemIndex--
-                                            scope.launch { itemListState.animateScrollToItem((itemIndex - 2).coerceAtLeast(0)) }
-                                        }
-                                        true
-                                    }
-                                    KeyEvent.KEYCODE_DPAD_DOWN -> {
-                                        if (itemIndex < selectedCatItems.size - 1) {
-                                            itemIndex++
-                                            scope.launch { itemListState.animateScrollToItem((itemIndex - 2).coerceAtLeast(0)) }
-                                        }
-                                        true
-                                    }
-                                    KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
-                                        val sel = selectedCatItems.getOrNull(itemIndex)
-                                        if (sel != null) {
-                                            val type = if (isChMode) "channel" else "station"
-                                            onItemSelect(type, sel.index)
-                                        }
-                                        true
-                                    }
-                                    else -> false
-                                }
-                            } else false
-                        }
-                ) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(12.dp)
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(vertical = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(
-                                if (isChMode) Icons.Default.Tv else Icons.Default.Radio,
-                                null, tint = accentColor, modifier = Modifier.size(18.dp)
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Column {
-                                Text(
-                                    selectedCatName,
-                                    fontSize = 14.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = TextPrimary,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                                Text(
-                                    "${selectedCatItems.size} ${if (isChMode) "canales" else "estaciones"}",
-                                    fontSize = 11.sp, color = TextMuted
-                                )
-                            }
-                        }
-
-                        LazyColumn(
-                            state = itemListState,
-                            verticalArrangement = Arrangement.spacedBy(3.dp),
-                            modifier = Modifier.fillMaxSize()
-                        ) {
-                            itemsIndexed(selectedCatItems) { localIndex, indexedItem ->
-                                val name = if (isChMode) (indexedItem.value as Channel).name else (indexedItem.value as Station).name
-                                val logoUrl = if (isChMode) (indexedItem.value as Channel).imageUrl else (indexedItem.value as Station).imageUrl
-                                val isCurrent = indexedItem.index == currentIndex &&
-                                        ((isChMode && contentType == "channel") || (!isChMode && contentType == "station"))
-
-                                ItemRow(
-                                    number = indexedItem.index + 1,
-                                    name = name,
-                                    logoUrl = logoUrl,
-                                    imageLoader = imageLoader,
-                                    isSelected = localIndex == itemIndex && focus == PanelFocus.ITEMS,
-                                    isCurrent = isCurrent,
-                                    accentColor = accentColor
-                                )
-                            }
-                        }
-                    }
                 }
             }
         }
