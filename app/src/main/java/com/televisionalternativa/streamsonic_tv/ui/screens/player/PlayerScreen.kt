@@ -528,9 +528,9 @@ private fun TwoPanelOverlay(
     // ===== STATE =====
     var tabIndex by remember { mutableIntStateOf(initialTab) }
     var focus by remember { mutableStateOf(PanelFocus.TABS) }
-    var contentIndex by remember { mutableIntStateOf(0) } // selected in content/category list
+    var contentIndex by remember { mutableIntStateOf(0) }
 
-    // Panel sliding levels (new design)
+    // Panel sliding levels
     var panelLevel by remember { mutableStateOf(PanelLevel.CONTENT) }
     var selectedCategory by remember { mutableStateOf<String?>(null) }
 
@@ -539,7 +539,7 @@ private fun TwoPanelOverlay(
     var searchFocusOnInput by remember { mutableStateOf(true) }
 
     // Logout row: treated as tabIndex = 4
-    val totalTabSlots = tabs.size + 1 // 4 tabs + 1 logout
+    val totalTabSlots = tabs.size + 1
 
     // List states
     val contentListState = rememberLazyListState()
@@ -598,7 +598,7 @@ private fun TwoPanelOverlay(
 
     // ===== FOCUS MANAGEMENT =====
     LaunchedEffect(focus, searchFocusOnInput) {
-        delay(80)
+        delay(120)
         try {
             when (focus) {
                 PanelFocus.TABS -> tabsFR.requestFocus()
@@ -622,20 +622,20 @@ private fun TwoPanelOverlay(
         if (tabIndex == 2) onRefreshFavorites()
     }
 
-    // Determine if current tab supports categories (Canales=0, Radio=1)
+    // Determine if current tab supports categories
     val hasCategories = tabIndex == 0 || tabIndex == 1
 
     // Get filtered content based on panel level
     val displayItems: List<IndexedValue<Any>> = remember(tabIndex, panelLevel, selectedCategory, channels, stations) {
         when {
-            tabIndex == 0 -> { // Canales
+            tabIndex == 0 -> {
                 if (panelLevel == PanelLevel.FILTERED && selectedCategory != null) {
                     groupedChannels[selectedCategory] ?: emptyList()
                 } else {
                     channels.withIndex().toList()
                 }
             }
-            tabIndex == 1 -> { // Radio
+            tabIndex == 1 -> {
                 if (panelLevel == PanelLevel.FILTERED && selectedCategory != null) {
                     groupedStations[selectedCategory] ?: emptyList()
                 } else {
@@ -655,7 +655,7 @@ private fun TwoPanelOverlay(
         Row(modifier = Modifier.fillMaxSize()) {
 
             // ========================================
-            // PANEL A: Tabs + Content
+            // PANEL A: Tabs ONLY (no content here)
             // ========================================
             Column(
                 modifier = Modifier
@@ -693,7 +693,6 @@ private fun TwoPanelOverlay(
                                     }
                                     KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
                                         if (tabIndex == 4) {
-                                            // Logout
                                             onLogout()
                                         } else {
                                             focus = PanelFocus.CONTENT
@@ -783,22 +782,54 @@ private fun TwoPanelOverlay(
                     }
                 }
 
-                // Divider
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(1.dp)
-                        .background(CardBorder.copy(alpha = 0.3f))
-                )
+                // Push hint bar to bottom
+                Spacer(modifier = Modifier.weight(1f))
 
-                // ---------- CONTENT AREA (changes based on panelLevel) ----------
+                // Bottom hint bar
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .weight(1f)
+                        .padding(8.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    val hint = when {
+                        focus == PanelFocus.TABS -> "▲▼ Navegar • ►/OK Abrir • BACK Cerrar"
+                        tabIndex == 0 || tabIndex == 1 -> when (panelLevel) {
+                            PanelLevel.CONTENT -> "◄► Categorías • ▲▼ Navegar • OK Reproducir"
+                            PanelLevel.CATEGORIES -> "◄ Volver • ▲▼ Categoría • ►/OK Filtrar"
+                            PanelLevel.FILTERED -> "◄ Categorías • ▲▼ Navegar • OK Reproducir"
+                        }
+                        tabIndex == 2 -> "▲▼ Navegar • OK Reproducir • ◄ Volver"
+                        tabIndex == 3 -> "▲▼ Resultados • OK Reproducir"
+                        else -> ""
+                    }
+                    Text(hint, fontSize = 11.sp, color = TextMuted)
+                }
+            }
+
+            // ========================================
+            // PANEL B: Content (slides in from right)
+            // ========================================
+            AnimatedVisibility(
+                visible = focus == PanelFocus.CONTENT,
+                enter = slideInHorizontally(initialOffsetX = { it }) + fadeIn(),
+                exit = slideOutHorizontally(targetOffsetX = { it }) + fadeOut()
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxHeight()
+                        .width(380.dp)
+                        .background(
+                            Brush.horizontalGradient(
+                                colors = listOf(
+                                    DarkSurface.copy(alpha = 0.95f),
+                                    DarkBackground.copy(alpha = 0.90f)
+                                )
+                            )
+                        )
                 ) {
                     when (tabIndex) {
-                        // Canales / Radio → 3-level: all content | categories | filtered
+                        // Canales / Radio → 3-level navigation
                         0, 1 -> {
                             val accentColor = if (tabIndex == 0) CyanGlow else PurpleGlow
                             val isChannel = tabIndex == 0
@@ -829,7 +860,6 @@ private fun TwoPanelOverlay(
                                                 KeyEvent.KEYCODE_DPAD_LEFT -> {
                                                     when (panelLevel) {
                                                         PanelLevel.CONTENT -> {
-                                                            // Go to categories
                                                             panelLevel = PanelLevel.CATEGORIES
                                                             contentIndex = 0
                                                         }
@@ -846,12 +876,10 @@ private fun TwoPanelOverlay(
                                                 KeyEvent.KEYCODE_DPAD_RIGHT -> {
                                                     when (panelLevel) {
                                                         PanelLevel.CONTENT -> {
-                                                            // Go to categories
                                                             panelLevel = PanelLevel.CATEGORIES
                                                             contentIndex = 0
                                                         }
                                                         PanelLevel.CATEGORIES -> {
-                                                            // Go to filtered content
                                                             val cat = activeCategories.getOrNull(contentIndex)
                                                             if (cat != null) {
                                                                 selectedCategory = cat
@@ -859,17 +887,12 @@ private fun TwoPanelOverlay(
                                                             }
                                                         }
                                                         PanelLevel.FILTERED -> {
-                                                            // Already in filtered, do nothing or could play
+                                                            // Already in filtered, do nothing
                                                         }
                                                     }
                                                     true
                                                 }
                                                 KeyEvent.KEYCODE_DPAD_UP -> {
-                                                    val maxIdx = when (panelLevel) {
-                                                        PanelLevel.CONTENT -> displayItems.size - 1
-                                                        PanelLevel.CATEGORIES -> activeCategories.size - 1
-                                                        PanelLevel.FILTERED -> displayItems.size - 1
-                                                    }
                                                     if (contentIndex > 0) {
                                                         contentIndex--
                                                         scope.launch {
@@ -895,7 +918,6 @@ private fun TwoPanelOverlay(
                                                 KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
                                                     when (panelLevel) {
                                                         PanelLevel.CONTENT -> {
-                                                            // Play the selected item
                                                             val item = displayItems.getOrNull(contentIndex)
                                                             if (item != null) {
                                                                 val type = if (isChannel) "channel" else "station"
@@ -903,7 +925,6 @@ private fun TwoPanelOverlay(
                                                             }
                                                         }
                                                         PanelLevel.CATEGORIES -> {
-                                                            // Go to filtered content
                                                             val cat = activeCategories.getOrNull(contentIndex)
                                                             if (cat != null) {
                                                                 selectedCategory = cat
@@ -912,7 +933,6 @@ private fun TwoPanelOverlay(
                                                             }
                                                         }
                                                         PanelLevel.FILTERED -> {
-                                                            // Play the selected item
                                                             val item = displayItems.getOrNull(contentIndex)
                                                             if (item != null) {
                                                                 val type = if (isChannel) "channel" else "station"
@@ -927,7 +947,6 @@ private fun TwoPanelOverlay(
                                         } else false
                                     }
                             ) {
-                                // Render content based on panelLevel
                                 Column(
                                     modifier = Modifier
                                         .fillMaxSize()
@@ -1021,7 +1040,7 @@ private fun TwoPanelOverlay(
                             }
                         }
 
-                        // Favoritos → show items directly
+                        // Favoritos
                         2 -> {
                             Box(
                                 modifier = Modifier
@@ -1127,7 +1146,7 @@ private fun TwoPanelOverlay(
                             }
                         }
 
-                        // Buscar → search input + results
+                        // Buscar
                         3 -> {
                             Column(
                                 modifier = Modifier
@@ -1283,27 +1302,6 @@ private fun TwoPanelOverlay(
                             }
                         }
                     }
-                }
-
-                // Bottom hint
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(8.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    val hint = when {
-                        focus == PanelFocus.TABS -> "▲▼ Navegar • ►/OK Abrir • BACK Cerrar"
-                        tabIndex == 0 || tabIndex == 1 -> when (panelLevel) {
-                            PanelLevel.CONTENT -> "◄ Categorías • ▲▼ Navegar • OK Reproducir"
-                            PanelLevel.CATEGORIES -> "► Atras • ▲▼ Categoría • OK Seleccionar"
-                            PanelLevel.FILTERED -> "◄ Categorías • ▲▼ Navegar • OK Reproducir"
-                        }
-                        tabIndex == 2 -> "▲▼ Navegar • OK Reproducir • ◄ Volver"
-                        tabIndex == 3 -> "▲▼ Resultados • OK Reproducir"
-                        else -> ""
-                    }
-                    Text(hint, fontSize = 11.sp, color = TextMuted)
                 }
             }
         }
