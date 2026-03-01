@@ -20,6 +20,16 @@ data class Station(
     @SerializedName("is_active") val isActive: Boolean = true
 )
 
+data class Movie(
+    val id: Int,
+    val title: String,
+    val description: String?,
+    @SerializedName("stream_url") val streamUrl: String?,
+    @SerializedName("image_url") val imageUrl: String?,
+    val category: String?,
+    @SerializedName("is_active") val isActive: Boolean = true
+)
+
 data class TvDevice(
     val id: Int,
     @SerializedName("device_id") val deviceId: String,
@@ -73,6 +83,11 @@ data class ChannelsResponse(
 data class StationsResponse(
     val success: Boolean,
     val data: List<Station>?
+)
+
+data class MoviesResponse(
+    val success: Boolean,
+    val data: List<Movie>?
 )
 
 data class ProfileResponse(

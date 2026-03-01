@@ -126,6 +126,21 @@ class StreamsonicRepository(
             }
         }
     }
+
+    suspend fun getMovies(): Result<List<Movie>> {
+        return withContext(Dispatchers.IO) {
+            try {
+                val response = api.getMovies()
+                if (response.success && response.data != null) {
+                    Result.success(response.data)
+                } else {
+                    Result.failure(Exception("Error obteniendo películas"))
+                }
+            } catch (e: Exception) {
+                Result.failure(e)
+            }
+        }
+    }
     
     suspend fun getProfile(): Result<UserProfile> {
         return withContext(Dispatchers.IO) {

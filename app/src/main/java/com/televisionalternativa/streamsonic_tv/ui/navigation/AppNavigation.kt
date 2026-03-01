@@ -9,12 +9,14 @@ import com.televisionalternativa.streamsonic_tv.data.local.TvPreferences
 import com.televisionalternativa.streamsonic_tv.data.repository.StreamsonicRepository
 import com.televisionalternativa.streamsonic_tv.ui.screens.pairing.PairingScreen
 import com.televisionalternativa.streamsonic_tv.ui.screens.player.PlayerScreen
+import com.televisionalternativa.streamsonic_tv.ui.screens.movies.MoviesScreen
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 
 sealed class Screen(val route: String) {
     object Pairing : Screen("pairing")
     object Player : Screen("player")
+    object Movies : Screen("movies")
 }
 
 @Composable
@@ -65,6 +67,22 @@ fun AppNavigation(
                     navController.navigate(Screen.Pairing.route) {
                         popUpTo(0) { inclusive = true }
                     }
+                },
+                onNavigateToMovies = {
+                    navController.navigate(Screen.Movies.route)
+                }
+            )
+        }
+
+        composable(Screen.Movies.route) {
+            MoviesScreen(
+                repository = repository,
+                onBack = {
+                    navController.popBackStack()
+                },
+                onPlayMovie = { streamUrl ->
+                    // For now, pop back — later we can open the player directly
+                    navController.popBackStack()
                 }
             )
         }

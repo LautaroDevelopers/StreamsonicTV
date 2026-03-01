@@ -87,7 +87,8 @@ private val tabs = listOf(
     TabDef("Canales", Icons.Filled.LiveTv, CyanGlow),
     TabDef("Radio", Icons.Filled.Radio, PurpleGlow),
     TabDef("Favoritos", Icons.Filled.Favorite, PinkGlow),
-    TabDef("Buscar", Icons.Filled.Search, GreenGlow)
+    TabDef("Buscar", Icons.Filled.Search, GreenGlow),
+    TabDef("Películas", Icons.Filled.Movie, OrangeGlow)
 )
 
 private data class FavoriteItem(
@@ -126,7 +127,8 @@ private enum class PanelLevel { CONTENT, CATEGORIES, FILTERED }
 @Composable
 fun PlayerScreen(
     repository: StreamsonicRepository,
-    onLogout: () -> Unit
+    onLogout: () -> Unit,
+    onNavigateToMovies: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val activity = context as? Activity
@@ -491,6 +493,7 @@ fun PlayerScreen(
                 onItemSelect = { type, index -> playItem(type, index) },
                 onDismiss = { showPanel = false },
                 onLogout = onLogout,
+                onNavigateToMovies = onNavigateToMovies,
                 onRefreshFavorites = {
                     scope.launch {
                         repository.getFavorites().fold(
@@ -520,6 +523,7 @@ private fun TwoPanelOverlay(
     onItemSelect: (type: String, index: Int) -> Unit,
     onDismiss: () -> Unit,
     onLogout: () -> Unit,
+    onNavigateToMovies: () -> Unit,
     onRefreshFavorites: () -> Unit,
     imageLoader: ImageLoader
 ) {
@@ -538,7 +542,7 @@ private fun TwoPanelOverlay(
     var searchQuery by remember { mutableStateOf("") }
     var searchFocusOnInput by remember { mutableStateOf(true) }
 
-    // Logout row: treated as tabIndex = 4
+    // Logout row: treated as tabIndex = 5 (after Películas at 4)
     val totalTabSlots = tabs.size + 1
 
     // List states
@@ -692,10 +696,18 @@ private fun TwoPanelOverlay(
                                         true
                                     }
                                     KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
-                                        if (tabIndex == 4) {
-                                            onLogout()
-                                        } else {
-                                            focus = PanelFocus.CONTENT
+                                        when (tabIndex) {
+                                            4 -> {
+                                                // Películas — navigate to full-screen movies
+                                                onNavigateToMovies()
+                                            }
+                                            5 -> {
+                                                // Desconectar
+                                                onLogout()
+                                            }
+                                            else -> {
+                                                focus = PanelFocus.CONTENT
+                                            }
                                         }
                                         true
                                     }
@@ -775,7 +787,7 @@ private fun TwoPanelOverlay(
                             icon = Icons.Filled.ExitToApp,
                             label = "Desconectar",
                             color = ErrorRed,
-                            isSelected = tabIndex == 4 && focus == PanelFocus.TABS,
+                            isSelected = tabIndex == 5 && focus == PanelFocus.TABS,
                             isActive = false,
                             isNowPlaying = false
                         )

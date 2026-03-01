@@ -22,6 +22,9 @@ interface StreamsonicApi {
     
     @GET("api/stations")
     suspend fun getStations(): StationsResponse
+
+    @GET("api/movies")
+    suspend fun getMovies(): MoviesResponse
     
     @GET("api/auth/profile")
     suspend fun getProfile(): ProfileResponse
