@@ -792,9 +792,9 @@ internal fun TabItem(
     isNowPlaying: Boolean,
     livePulseAlpha: Float
 ) {
-    // derivedStateOf: only this item re-evaluates when tabIndex/focus change
-    val isSelected by remember { derivedStateOf { tabIndex == currentTabIndex && focus == PanelFocus.TABS } }
-    val isActive   by remember { derivedStateOf { tabIndex == currentTabIndex } }
+    // Direct calculation — these are cheap comparisons, no need for derivedStateOf
+    val isSelected = tabIndex == currentTabIndex && focus == PanelFocus.TABS
+    val isActive = tabIndex == currentTabIndex
 
     Row(
         modifier = Modifier
@@ -845,7 +845,7 @@ internal fun CategoryRow(
     focus: PanelFocus,
     accentColor: Color
 ) {
-    val isSelected by remember { derivedStateOf { index == contentIndex && focus == PanelFocus.CONTENT } }
+    val isSelected = index == contentIndex && focus == PanelFocus.CONTENT
 
     Row(
         modifier = Modifier
@@ -912,9 +912,7 @@ internal fun ItemRow(
     searchFocusOnInput: Boolean = false,
     livePulseAlpha: Float = 1f
 ) {
-    val isSelected by remember {
-        derivedStateOf { index == contentIndex && focus == PanelFocus.CONTENT && !searchFocusOnInput }
-    }
+    val isSelected = index == contentIndex && focus == PanelFocus.CONTENT && !searchFocusOnInput
 
     val bg = when {
         isSelected -> accentColor.copy(alpha = 0.2f)

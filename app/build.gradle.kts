@@ -31,8 +31,8 @@ android {
         applicationId = "com.televisionalternativa.streamsonic_tv"
         minSdk = 21
         targetSdk = 35
-        versionCode = 9
-        versionName = "1.3.0"
+        versionCode = 10
+        versionName = "1.4.0"
     }
 
     buildTypes {
