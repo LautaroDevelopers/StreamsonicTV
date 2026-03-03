@@ -1,9 +1,7 @@
 package com.televisionalternativa.streamsonic_tv.ui.screens.movies
 
+import android.net.Uri
 import android.view.KeyEvent
-import android.view.ViewGroup
-import android.widget.FrameLayout
-import androidx.annotation.OptIn
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
@@ -36,17 +34,10 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.media3.common.MediaItem
-import androidx.media3.common.PlaybackException
-import androidx.media3.common.Player
-import androidx.media3.common.util.UnstableApi
-import androidx.media3.common.util.Util
-import androidx.media3.datasource.okhttp.OkHttpDataSource
-import androidx.media3.exoplayer.DefaultLoadControl
-import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
-import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
-import androidx.media3.ui.PlayerView
+import org.videolan.libvlc.LibVLC
+import org.videolan.libvlc.Media
+import org.videolan.libvlc.MediaPlayer
+import org.videolan.libvlc.util.VLCVideoLayout
 import androidx.tv.material3.*
 import coil.ImageLoader
 import coil.compose.AsyncImage
@@ -54,9 +45,9 @@ import coil.decode.SvgDecoder
 import com.televisionalternativa.streamsonic_tv.data.model.Movie
 import com.televisionalternativa.streamsonic_tv.data.repository.StreamsonicRepository
 import com.televisionalternativa.streamsonic_tv.ui.theme.*
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import okhttp3.OkHttpClient
-import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.withContext
 
 // ============================================================
 // Focus area enum
@@ -67,7 +58,6 @@ private enum class BrowseFocus { HERO, CAROUSEL }
 // MoviesScreen
 // ============================================================
 
-@OptIn(UnstableApi::class)
 @Composable
 fun MoviesScreen(
     repository: StreamsonicRepository,
@@ -117,60 +107,44 @@ fun MoviesScreen(
         }
     }
 
-    // ===== EXOPLAYER =====
-    val exoPlayer = remember {
-        val okHttpClient = OkHttpClient.Builder()
-            .connectTimeout(30, TimeUnit.SECONDS)
-            .readTimeout(30, TimeUnit.SECONDS)
-            .followRedirects(true)
-            .followSslRedirects(true)
-            .build()
+    // ===== VLC PLAYER =====
+    class VlcHolder {
+        var libVlc: LibVLC? = null
+        var mediaPlayer: MediaPlayer? = null
+    }
+    val vlcHolder = remember { VlcHolder() }
+    var vlcReady by remember { mutableStateOf(false) }
 
-        val dataSourceFactory = OkHttpDataSource.Factory(okHttpClient)
-            .setUserAgent(Util.getUserAgent(context, "StreamsonicTV"))
-
-        val trackSelector = DefaultTrackSelector(context).apply {
-            setParameters(
-                buildUponParameters()
-                    .setPreferredAudioLanguage("es")
-            )
+    LaunchedEffect(Unit) {
+        val vlc = withContext(Dispatchers.IO) {
+            LibVLC(context, arrayListOf(
+                "--network-caching=1500",
+                "--no-drop-late-frames",
+                "--no-skip-frames",
+                "--rtsp-tcp",
+                "--aout=opensles",
+                "--audio-time-stretch"
+            ))
         }
-
-        val loadControl = DefaultLoadControl.Builder()
-            .setBufferDurationsMs(
-                DefaultLoadControl.DEFAULT_MIN_BUFFER_MS,
-                DefaultLoadControl.DEFAULT_MAX_BUFFER_MS,
-                DefaultLoadControl.DEFAULT_BUFFER_FOR_PLAYBACK_MS,
-                DefaultLoadControl.DEFAULT_BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS
-            )
-            .build()
-
-        ExoPlayer.Builder(context)
-            .setMediaSourceFactory(DefaultMediaSourceFactory(dataSourceFactory))
-            .setTrackSelector(trackSelector)
-            .setLoadControl(loadControl)
-            .build()
-            .apply {
-                playWhenReady = true
-                addListener(object : Player.Listener {
-                    override fun onPlayerError(error: PlaybackException) {
-                        playerError = when (error.errorCode) {
-                            PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED ->
-                                "Error de conexión. Verifica tu internet."
-                            PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS ->
-                                "La película no está disponible."
-                            PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED,
-                            PlaybackException.ERROR_CODE_PARSING_MANIFEST_MALFORMED ->
-                                "Formato no soportado."
-                            else -> "Error de reproducción: ${error.message}"
-                        }
-                    }
-                })
+        val player = MediaPlayer(vlc)
+        player.setEventListener { event ->
+            when (event.type) {
+                MediaPlayer.Event.EncounteredError -> {
+                    playerError = "Error de reproducción. Intentá de nuevo."
+                }
             }
+        }
+        vlcHolder.libVlc = vlc
+        vlcHolder.mediaPlayer = player
+        vlcReady = true
     }
 
     DisposableEffect(Unit) {
-        onDispose { exoPlayer.release() }
+        onDispose {
+            vlcHolder.mediaPlayer?.stop()
+            vlcHolder.mediaPlayer?.release()
+            vlcHolder.libVlc?.release()
+        }
     }
 
     // ===== DATA LOADING =====
@@ -200,16 +174,19 @@ fun MoviesScreen(
     // ===== PLAY MOVIE =====
     fun playMovie(movie: Movie) {
         val url = movie.streamUrl ?: return
+        val player = vlcHolder.mediaPlayer ?: return
+        val vlc = vlcHolder.libVlc ?: return
         playingMovie = movie
         isPlayerVisible = true
         playerError = null
-        exoPlayer.setMediaItem(MediaItem.fromUri(url))
-        exoPlayer.prepare()
-        exoPlayer.play()
+        val media = Media(vlc, Uri.parse(url))
+        player.media = media
+        media.release()
+        player.play()
     }
 
     fun stopPlayer() {
-        exoPlayer.stop()
+        vlcHolder.mediaPlayer?.stop()
         isPlayerVisible = false
         playingMovie = null
         playerError = null
@@ -345,13 +322,8 @@ fun MoviesScreen(
             ) {
                 AndroidView(
                     factory = { ctx ->
-                        PlayerView(ctx).apply {
-                            player = exoPlayer
-                            useController = true
-                            layoutParams = FrameLayout.LayoutParams(
-                                ViewGroup.LayoutParams.MATCH_PARENT,
-                                ViewGroup.LayoutParams.MATCH_PARENT
-                            )
+                        VLCVideoLayout(ctx).also { layout ->
+                            vlcHolder.mediaPlayer?.attachViews(layout, null, false, false)
                         }
                     },
                     modifier = Modifier.fillMaxSize()

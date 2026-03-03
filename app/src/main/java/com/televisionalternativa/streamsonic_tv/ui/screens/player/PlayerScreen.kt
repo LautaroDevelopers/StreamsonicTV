@@ -5,9 +5,6 @@ import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.view.KeyEvent
-import android.view.ViewGroup
-import android.widget.FrameLayout
-import androidx.annotation.OptIn
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
@@ -44,17 +41,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.media3.common.MediaItem
-import androidx.media3.common.PlaybackException
-import androidx.media3.common.Player
-import androidx.media3.common.util.UnstableApi
-import androidx.media3.common.util.Util
-import androidx.media3.datasource.okhttp.OkHttpDataSource
-import androidx.media3.exoplayer.DefaultLoadControl
-import androidx.media3.exoplayer.ExoPlayer
-import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
-import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
-import androidx.media3.ui.PlayerView
 import androidx.tv.material3.*
 import coil.ImageLoader
 import coil.compose.AsyncImage
@@ -68,22 +54,26 @@ import com.televisionalternativa.streamsonic_tv.update.UpdateCheckResult
 import com.televisionalternativa.streamsonic_tv.update.UpdateChecker
 import com.televisionalternativa.streamsonic_tv.update.UpdateDialog
 import com.televisionalternativa.streamsonic_tv.update.UpdateInfo
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import okhttp3.OkHttpClient
-import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.withContext
+import org.videolan.libvlc.LibVLC
+import org.videolan.libvlc.Media
+import org.videolan.libvlc.MediaPlayer
+import org.videolan.libvlc.util.VLCVideoLayout
 
 // ============================================================
 // Tab definitions
 // ============================================================
 
-private data class TabDef(
+internal data class TabDef(
     val label: String,
     val icon: ImageVector,
     val color: Color
 )
 
-private val tabs = listOf(
+internal val tabs = listOf(
     TabDef("Canales", Icons.Filled.LiveTv, CyanGlow),
     TabDef("Radio", Icons.Filled.Radio, PurpleGlow),
     TabDef("Favoritos", Icons.Filled.Favorite, PinkGlow),
@@ -91,7 +81,7 @@ private val tabs = listOf(
     TabDef("Películas", Icons.Filled.Movie, OrangeGlow)
 )
 
-private data class FavoriteItem(
+internal data class FavoriteItem(
     val itemId: Int,
     val itemType: String,
     val name: String,
@@ -101,7 +91,7 @@ private data class FavoriteItem(
     val listIndex: Int
 )
 
-private data class SearchResult(
+internal data class SearchResult(
     val name: String,
     val imageUrl: String?,
     val category: String?,
@@ -111,19 +101,18 @@ private data class SearchResult(
 )
 
 // Focus areas inside the panel
-private enum class PanelFocus { TABS, CONTENT }
+internal enum class PanelFocus { TABS, CONTENT }
 
 // Panel navigation levels (for sliding panel design)
 // CONTENT: Shows all channels/radios
 // CATEGORIES: Shows category list
 // FILTERED: Shows channels/radios filtered by selected category
-private enum class PanelLevel { CONTENT, CATEGORIES, FILTERED }
+internal enum class PanelLevel { CONTENT, CATEGORIES, FILTERED }
 
 // ============================================================
 // Main PlayerScreen
 // ============================================================
 
-@OptIn(UnstableApi::class)
 @Composable
 fun PlayerScreen(
     repository: StreamsonicRepository,
@@ -153,6 +142,11 @@ fun PlayerScreen(
     var isPlaying by remember { mutableStateOf(true) }
     var showControls by remember { mutableStateOf(true) }
     var playerError by remember { mutableStateOf<String?>(null) }
+
+    // ===== AUTO-RETRY STATE =====
+    var retryCount by remember { mutableIntStateOf(0) }
+    var isRetrying by remember { mutableStateOf(false) }
+    val maxRetries = 5
 
     // ===== PANEL STATE =====
     var showPanel by remember { mutableStateOf(false) }
@@ -212,63 +206,47 @@ fun PlayerScreen(
         }
     }
 
-    // ===== EXOPLAYER =====
-    val exoPlayer = remember {
-        val okHttpClient = OkHttpClient.Builder()
-            .connectTimeout(30, TimeUnit.SECONDS)
-            .readTimeout(30, TimeUnit.SECONDS)
-            .followRedirects(true)
-            .followSslRedirects(true)
-            .build()
+    // ===== VLC =====
+    // Holder class — NOT mutableStateOf, so changes don't trigger recomposition
+    class VlcHolder {
+        var libVlc: LibVLC? = null
+        var mediaPlayer: MediaPlayer? = null
+    }
+    val vlcHolder = remember { VlcHolder() }
+    var vlcReady by remember { mutableStateOf(false) }
 
-        val dataSourceFactory = OkHttpDataSource.Factory(okHttpClient)
-            .setUserAgent(Util.getUserAgent(context, "StreamsonicTV"))
-
-        val trackSelector = DefaultTrackSelector(context).apply {
-            setParameters(
-                buildUponParameters()
-                    .setMaxVideoSizeSd()
-                    .setPreferredAudioLanguage("es")
-            )
+    LaunchedEffect(Unit) {
+        val vlc = withContext(Dispatchers.IO) {
+            LibVLC(context, arrayListOf(
+                "--network-caching=1500",
+                "--no-drop-late-frames",
+                "--no-skip-frames",
+                "--rtsp-tcp",
+                "--aout=opensles",
+                "--audio-time-stretch",
+            ))
         }
-
-        val loadControl = DefaultLoadControl.Builder()
-            .setBufferDurationsMs(
-                DefaultLoadControl.DEFAULT_MIN_BUFFER_MS,
-                DefaultLoadControl.DEFAULT_MAX_BUFFER_MS,
-                DefaultLoadControl.DEFAULT_BUFFER_FOR_PLAYBACK_MS,
-                DefaultLoadControl.DEFAULT_BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS
-            )
-            .build()
-
-        ExoPlayer.Builder(context)
-            .setMediaSourceFactory(DefaultMediaSourceFactory(dataSourceFactory))
-            .setTrackSelector(trackSelector)
-            .setLoadControl(loadControl)
-            .build()
-            .apply {
-                playWhenReady = true
-                addListener(object : Player.Listener {
-                    override fun onPlayerError(error: PlaybackException) {
-                        playerError = when (error.errorCode) {
-                            PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED ->
-                                "Error de conexión. Verifica tu internet."
-                            PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS ->
-                                "El stream no está disponible."
-                            PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED,
-                            PlaybackException.ERROR_CODE_PARSING_MANIFEST_MALFORMED ->
-                                "Formato de stream no soportado."
-                            PlaybackException.ERROR_CODE_IO_UNSPECIFIED ->
-                                "Error de red. Reintentando..."
-                            else -> "Error de reproducción: ${error.message}"
-                        }
-                    }
-
-                    override fun onIsPlayingChanged(playing: Boolean) {
-                        isPlaying = playing
-                    }
-                })
+        val player = MediaPlayer(vlc)
+        player.setEventListener { event ->
+            when (event.type) {
+                MediaPlayer.Event.Playing -> {
+                    isPlaying = true
+                    retryCount = 0
+                    isRetrying = false
+                }
+                MediaPlayer.Event.Paused,
+                MediaPlayer.Event.Stopped -> {
+                    isPlaying = false
+                }
+                MediaPlayer.Event.EncounteredError -> {
+                    retryCount++
+                    isRetrying = true
+                }
             }
+        }
+        vlcHolder.libVlc = vlc
+        vlcHolder.mediaPlayer = player
+        vlcReady = true
     }
 
     // ===== DATA LOADING =====
@@ -279,12 +257,12 @@ fun PlayerScreen(
 
             repository.getChannels().fold(
                 onSuccess = { channels = it },
-                onFailure = { errorMessage = it.message }
+                onFailure = { errorMessage = "No se pudo cargar el contenido. Verificá tu conexión." }
             )
 
             repository.getStations().fold(
                 onSuccess = { stations = it },
-                onFailure = { if (errorMessage == null) errorMessage = it.message }
+                onFailure = { if (errorMessage == null) errorMessage = "No se pudo cargar el contenido. Verificá tu conexión." }
             )
 
             repository.getFavorites().fold(
@@ -323,11 +301,47 @@ fun PlayerScreen(
     }
 
     // ===== PLAY STREAM ON CHANGE =====
-    LaunchedEffect(currentStreamUrl) {
+    LaunchedEffect(currentStreamUrl, vlcReady) {
+        if (!vlcReady) return@LaunchedEffect
+        val player = vlcHolder.mediaPlayer ?: return@LaunchedEffect
+        val vlc = vlcHolder.libVlc ?: return@LaunchedEffect
         if (currentStreamUrl.isNotEmpty()) {
             playerError = null
-            exoPlayer.setMediaItem(MediaItem.fromUri(currentStreamUrl))
-            exoPlayer.prepare()
+            retryCount = 0
+            isRetrying = false
+            val media = Media(vlc, android.net.Uri.parse(currentStreamUrl))
+            player.media = media
+            media.release()
+            player.play()
+        }
+    }
+
+    // ===== AUTO-RETRY LOGIC =====
+    LaunchedEffect(retryCount) {
+        val player = vlcHolder.mediaPlayer ?: return@LaunchedEffect
+        val vlc = vlcHolder.libVlc ?: return@LaunchedEffect
+        if (retryCount > 0 && currentStreamUrl.isNotEmpty()) {
+            if (retryCount <= maxRetries) {
+                delay((1000L + retryCount * 1000L))
+                playerError = null
+                val media = Media(vlc, android.net.Uri.parse(currentStreamUrl))
+                player.media = media
+                media.release()
+                player.play()
+            } else {
+                // All retries exhausted — skip to next channel/station
+                isRetrying = false
+                retryCount = 0
+                val maxIdx = if (isChannelMode) channels.size - 1 else stations.size - 1
+                if (maxIdx > 0) {
+                    val nextIndex = if (currentIndex < maxIdx) currentIndex + 1 else 0
+                    currentIndex = nextIndex
+                    showControls = true
+                    scope.launch { repository.saveLastChannel(nextIndex, contentType) }
+                } else {
+                    playerError = "No se pudo reproducir después de $maxRetries intentos."
+                }
+            }
         }
     }
 
@@ -341,7 +355,11 @@ fun PlayerScreen(
 
     // Cleanup
     DisposableEffect(Unit) {
-        onDispose { exoPlayer.release() }
+        onDispose {
+            vlcHolder.mediaPlayer?.stop()
+            vlcHolder.mediaPlayer?.release()
+            vlcHolder.libVlc?.release()
+        }
     }
 
     // ===== CHANNEL CHANGE =====
@@ -401,8 +419,9 @@ fun PlayerScreen(
                     when (event.nativeKeyEvent.keyCode) {
                         KeyEvent.KEYCODE_BACK -> {
                             // Close app completely
-                            exoPlayer.stop()
-                            exoPlayer.release()
+                            vlcHolder.mediaPlayer?.stop()
+                            vlcHolder.mediaPlayer?.release()
+                            vlcHolder.libVlc?.release()
                             activity?.finishAndRemoveTask()
                             true
                         }
@@ -420,7 +439,8 @@ fun PlayerScreen(
                             true
                         }
                         KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> {
-                            if (exoPlayer.isPlaying) exoPlayer.pause() else exoPlayer.play()
+                            val p = vlcHolder.mediaPlayer
+                            if (p?.isPlaying == true) p.pause() else p?.play()
                             true
                         }
                         KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT -> {
@@ -449,15 +469,21 @@ fun PlayerScreen(
                 PlayerErrorState(
                     message = playerError!!,
                     onRetry = {
+                        val player = vlcHolder.mediaPlayer ?: return@PlayerErrorState
+                        val vlc = vlcHolder.libVlc ?: return@PlayerErrorState
                         playerError = null
-                        exoPlayer.setMediaItem(MediaItem.fromUri(currentStreamUrl))
-                        exoPlayer.prepare()
+                        retryCount = 0
+                        isRetrying = false
+                        val media = Media(vlc, android.net.Uri.parse(currentStreamUrl))
+                        player.media = media
+                        media.release()
+                        player.play()
                     }
                 )
             }
             isChannelMode -> {
                 VideoPlayerContent(
-                    exoPlayer = exoPlayer,
+                    mediaPlayer = vlcHolder.mediaPlayer,
                     title = currentTitle,
                     category = currentCategory,
                     isPlaying = isPlaying,
@@ -468,12 +494,43 @@ fun PlayerScreen(
             }
             else -> {
                 AudioPlayerContent(
-                    exoPlayer = exoPlayer,
+                    mediaPlayer = vlcHolder.mediaPlayer,
                     title = currentTitle,
                     isPlaying = isPlaying,
                     currentIndex = safeIndex,
                     totalItems = itemCount
                 )
+            }
+        }
+
+        // Retry overlay
+        if (isRetrying && retryCount in 1..maxRetries) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.6f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    CircularProgressIndicator(
+                        color = CyanGlow,
+                        modifier = Modifier.size(40.dp),
+                        strokeWidth = 3.dp
+                    )
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text(
+                        "Reintentando conexión...",
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = TextPrimary
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        "Intento $retryCount de $maxRetries",
+                        fontSize = 13.sp,
+                        color = TextMuted
+                    )
+                }
             }
         }
 
@@ -529,10 +586,14 @@ private fun TwoPanelOverlay(
 ) {
     val scope = rememberCoroutineScope()
 
+    // Single live pulse animation for the entire panel
+    val livePulseAlpha = rememberLivePulseAlpha()
+
     // ===== STATE =====
     var tabIndex by remember { mutableIntStateOf(initialTab) }
     var focus by remember { mutableStateOf(PanelFocus.TABS) }
     var contentIndex by remember { mutableIntStateOf(0) }
+    var isScrolling by remember { mutableStateOf(false) }
 
     // Panel sliding levels
     var panelLevel by remember { mutableStateOf(PanelLevel.CONTENT) }
@@ -658,681 +719,83 @@ private fun TwoPanelOverlay(
     ) {
         Row(modifier = Modifier.fillMaxSize()) {
 
-            // ========================================
-            // PANEL A: Tabs ONLY (no content here)
-            // ========================================
-            Column(
-                modifier = Modifier
-                    .fillMaxHeight()
-                    .width(320.dp)
-                    .background(
-                        Brush.verticalGradient(
-                            colors = listOf(
-                                DarkSurface.copy(alpha = 0.98f),
-                                DarkBackground.copy(alpha = 0.98f)
-                            )
-                        )
-                    )
-            ) {
-                // ---------- TAB BAR ----------
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .focusRequester(tabsFR)
-                        .focusable()
-                        .onKeyEvent { event ->
-                            if (event.nativeKeyEvent.action == KeyEvent.ACTION_DOWN && focus == PanelFocus.TABS) {
-                                when (event.nativeKeyEvent.keyCode) {
-                                    KeyEvent.KEYCODE_BACK -> {
-                                        onDismiss()
-                                        true
-                                    }
-                                    KeyEvent.KEYCODE_DPAD_UP -> {
-                                        if (tabIndex > 0) tabIndex--
-                                        true
-                                    }
-                                    KeyEvent.KEYCODE_DPAD_DOWN -> {
-                                        if (tabIndex < totalTabSlots - 1) tabIndex++
-                                        true
-                                    }
-                                    KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
-                                        when (tabIndex) {
-                                            4 -> {
-                                                // Películas — navigate to full-screen movies
-                                                onNavigateToMovies()
-                                            }
-                                            5 -> {
-                                                // Desconectar
-                                                onLogout()
-                                            }
-                                            else -> {
-                                                focus = PanelFocus.CONTENT
-                                            }
-                                        }
-                                        true
-                                    }
-                                    else -> false
-                                }
-                            } else false
-                        }
-                ) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(12.dp)
-                    ) {
-                        // App logo
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(bottom = 12.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(36.dp)
-                                    .clip(RoundedCornerShape(10.dp))
-                                    .background(
-                                        Brush.linearGradient(listOf(CyanGlow, PurpleGlow))
-                                    ),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(
-                                    Icons.Default.PlayArrow,
-                                    contentDescription = null,
-                                    tint = Color.White,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                            }
-                            Spacer(modifier = Modifier.width(10.dp))
-                            Text(
-                                "Streamsonic",
-                                fontSize = 16.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = TextPrimary
-                            )
-                        }
+            PanelTabsColumn(
+                tabIndex = tabIndex,
+                focus = focus,
+                contentType = contentType,
+                panelLevel = panelLevel,
+                tabsFR = tabsFR,
+                livePulseAlpha = livePulseAlpha,
+                onTabUp = { if (tabIndex > 0) tabIndex-- },
+                onTabDown = { if (tabIndex < totalTabSlots - 1) tabIndex++ },
+                onTabSelect = { focus = PanelFocus.CONTENT },
+                onDismiss = onDismiss,
+                onLogout = onLogout,
+                onNavigateToMovies = onNavigateToMovies
+            )
 
-                        // Tab items
-                        tabs.forEachIndexed { index, tab ->
-                            val isSelected = index == tabIndex && focus == PanelFocus.TABS
-                            val isActive = index == tabIndex
-                            val isNowPlaying = (index == 0 && contentType == "channel") ||
-                                    (index == 1 && contentType == "station")
-
-                            TabItem(
-                                icon = tab.icon,
-                                label = tab.label,
-                                color = tab.color,
-                                isSelected = isSelected,
-                                isActive = isActive,
-                                isNowPlaying = isNowPlaying
-                            )
-                            Spacer(modifier = Modifier.height(3.dp))
-                        }
-
-                        // Divider
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(1.dp)
-                                .background(CardBorder.copy(alpha = 0.4f))
-                        )
-                        Spacer(modifier = Modifier.height(8.dp))
-
-                        // Logout
-                        @Suppress("DEPRECATION")
-                        TabItem(
-                            icon = Icons.Filled.ExitToApp,
-                            label = "Desconectar",
-                            color = ErrorRed,
-                            isSelected = tabIndex == 5 && focus == PanelFocus.TABS,
-                            isActive = false,
-                            isNowPlaying = false
-                        )
-                    }
-                }
-
-                // Push hint bar to bottom
-                Spacer(modifier = Modifier.weight(1f))
-
-                // Bottom hint bar
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(8.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    val hint = when {
-                        focus == PanelFocus.TABS -> "▲▼ Navegar • ►/OK Abrir • BACK Cerrar"
-                        tabIndex == 0 || tabIndex == 1 -> when (panelLevel) {
-                            PanelLevel.CONTENT -> "◄► Categorías • ▲▼ Navegar • OK Reproducir"
-                            PanelLevel.CATEGORIES -> "◄ Volver • ▲▼ Categoría • ►/OK Filtrar"
-                            PanelLevel.FILTERED -> "◄ Categorías • ▲▼ Navegar • OK Reproducir"
-                        }
-                        tabIndex == 2 -> "▲▼ Navegar • OK Reproducir • ◄ Volver"
-                        tabIndex == 3 -> "▲▼ Resultados • OK Reproducir"
-                        else -> ""
-                    }
-                    Text(hint, fontSize = 11.sp, color = TextMuted)
-                }
-            }
-
-            // ========================================
-            // PANEL B: Content (slides in from right)
-            // ========================================
             AnimatedVisibility(
                 visible = focus == PanelFocus.CONTENT,
                 enter = slideInHorizontally(initialOffsetX = { it }) + fadeIn(),
                 exit = slideOutHorizontally(targetOffsetX = { it }) + fadeOut()
             ) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxHeight()
-                        .width(380.dp)
-                        .background(
-                            Brush.horizontalGradient(
-                                colors = listOf(
-                                    DarkSurface.copy(alpha = 0.95f),
-                                    DarkBackground.copy(alpha = 0.90f)
-                                )
-                            )
-                        )
-                ) {
-                    when (tabIndex) {
-                        // Canales / Radio → 3-level navigation
-                        0, 1 -> {
-                            val accentColor = if (tabIndex == 0) CyanGlow else PurpleGlow
-                            val isChannel = tabIndex == 0
-
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .focusRequester(contentFR)
-                                    .focusable()
-                                    .onKeyEvent { event ->
-                                        if (event.nativeKeyEvent.action == KeyEvent.ACTION_DOWN && focus == PanelFocus.CONTENT) {
-                                            when (event.nativeKeyEvent.keyCode) {
-                                                KeyEvent.KEYCODE_BACK -> {
-                                                    when (panelLevel) {
-                                                        PanelLevel.CONTENT -> {
-                                                            focus = PanelFocus.TABS
-                                                        }
-                                                        PanelLevel.CATEGORIES -> {
-                                                            focus = PanelFocus.TABS
-                                                        }
-                                                        PanelLevel.FILTERED -> {
-                                                            panelLevel = PanelLevel.CATEGORIES
-                                                            contentIndex = 0
-                                                        }
-                                                    }
-                                                    true
-                                                }
-                                                KeyEvent.KEYCODE_DPAD_LEFT -> {
-                                                    when (panelLevel) {
-                                                        PanelLevel.CONTENT -> {
-                                                            panelLevel = PanelLevel.CATEGORIES
-                                                            contentIndex = 0
-                                                        }
-                                                        PanelLevel.CATEGORIES -> {
-                                                            focus = PanelFocus.TABS
-                                                        }
-                                                        PanelLevel.FILTERED -> {
-                                                            panelLevel = PanelLevel.CATEGORIES
-                                                            contentIndex = 0
-                                                        }
-                                                    }
-                                                    true
-                                                }
-                                                KeyEvent.KEYCODE_DPAD_RIGHT -> {
-                                                    when (panelLevel) {
-                                                        PanelLevel.CONTENT -> {
-                                                            panelLevel = PanelLevel.CATEGORIES
-                                                            contentIndex = 0
-                                                        }
-                                                        PanelLevel.CATEGORIES -> {
-                                                            val cat = activeCategories.getOrNull(contentIndex)
-                                                            if (cat != null) {
-                                                                selectedCategory = cat
-                                                                panelLevel = PanelLevel.FILTERED
-                                                            }
-                                                        }
-                                                        PanelLevel.FILTERED -> {
-                                                            // Already in filtered, do nothing
-                                                        }
-                                                    }
-                                                    true
-                                                }
-                                                KeyEvent.KEYCODE_DPAD_UP -> {
-                                                    if (contentIndex > 0) {
-                                                        contentIndex--
-                                                        scope.launch {
-                                                            contentListState.animateScrollToItem((contentIndex - 2).coerceAtLeast(0))
-                                                        }
-                                                    }
-                                                    true
-                                                }
-                                                KeyEvent.KEYCODE_DPAD_DOWN -> {
-                                                    val maxIdx = when (panelLevel) {
-                                                        PanelLevel.CONTENT -> displayItems.size - 1
-                                                        PanelLevel.CATEGORIES -> activeCategories.size - 1
-                                                        PanelLevel.FILTERED -> displayItems.size - 1
-                                                    }
-                                                    if (contentIndex < maxIdx) {
-                                                        contentIndex++
-                                                        scope.launch {
-                                                            contentListState.animateScrollToItem((contentIndex - 2).coerceAtLeast(0))
-                                                        }
-                                                    }
-                                                    true
-                                                }
-                                                KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
-                                                    when (panelLevel) {
-                                                        PanelLevel.CONTENT -> {
-                                                            val item = displayItems.getOrNull(contentIndex)
-                                                            if (item != null) {
-                                                                val type = if (isChannel) "channel" else "station"
-                                                                onItemSelect(type, item.index)
-                                                            }
-                                                        }
-                                                        PanelLevel.CATEGORIES -> {
-                                                            val cat = activeCategories.getOrNull(contentIndex)
-                                                            if (cat != null) {
-                                                                selectedCategory = cat
-                                                                panelLevel = PanelLevel.FILTERED
-                                                                contentIndex = 0
-                                                            }
-                                                        }
-                                                        PanelLevel.FILTERED -> {
-                                                            val item = displayItems.getOrNull(contentIndex)
-                                                            if (item != null) {
-                                                                val type = if (isChannel) "channel" else "station"
-                                                                onItemSelect(type, item.index)
-                                                            }
-                                                        }
-                                                    }
-                                                    true
-                                                }
-                                                else -> false
-                                            }
-                                        } else false
-                                    }
-                            ) {
-                                Column(
-                                    modifier = Modifier
-                                        .fillMaxSize()
-                                        .padding(12.dp)
-                                ) {
-                                    // Header
-                                    Row(
-                                        modifier = Modifier.padding(vertical = 8.dp),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Icon(
-                                            when (panelLevel) {
-                                                PanelLevel.CONTENT -> if (isChannel) Icons.Default.LiveTv else Icons.Default.Radio
-                                                PanelLevel.CATEGORIES -> Icons.Default.Category
-                                                PanelLevel.FILTERED -> if (isChannel) Icons.Default.LiveTv else Icons.Default.Radio
-                                            },
-                                            contentDescription = null,
-                                            tint = accentColor,
-                                            modifier = Modifier.size(18.dp)
-                                        )
-                                        Spacer(modifier = Modifier.width(8.dp))
-                                        Text(
-                                            when (panelLevel) {
-                                                PanelLevel.CONTENT -> if (isChannel) "Todos los Canales" else "Todas las Estaciones"
-                                                PanelLevel.CATEGORIES -> "Categorías"
-                                                PanelLevel.FILTERED -> selectedCategory ?: ""
-                                            },
-                                            fontSize = 14.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            color = TextPrimary
-                                        )
-                                        Spacer(modifier = Modifier.weight(1f))
-                                        Text(
-                                            when (panelLevel) {
-                                                PanelLevel.CONTENT -> "${displayItems.size}"
-                                                PanelLevel.CATEGORIES -> "${activeCategories.size}"
-                                                PanelLevel.FILTERED -> "${displayItems.size}"
-                                            },
-                                            fontSize = 12.sp,
-                                            color = TextMuted
-                                        )
-                                    }
-
-                                    LazyColumn(
-                                        state = contentListState,
-                                        verticalArrangement = Arrangement.spacedBy(3.dp),
-                                        modifier = Modifier.fillMaxSize()
-                                    ) {
-                                        when (panelLevel) {
-                                            PanelLevel.CONTENT, PanelLevel.FILTERED -> {
-                                                itemsIndexed(displayItems) { index, indexed ->
-                                                    val item = indexed.value
-                                                    val name: String
-                                                    val logoUrl: String?
-                                                    val isCurrent: Boolean
-                                                    if (isChannel) {
-                                                        val ch = item as Channel
-                                                        name = ch.name
-                                                        logoUrl = ch.imageUrl
-                                                        isCurrent = index == currentIndex && contentType == "channel"
-                                                    } else {
-                                                        val st = item as Station
-                                                        name = st.name
-                                                        logoUrl = st.imageUrl
-                                                        isCurrent = index == currentIndex && contentType == "station"
-                                                    }
-                                                    ItemRow(
-                                                        number = index + 1,
-                                                        name = name,
-                                                        logoUrl = logoUrl,
-                                                        imageLoader = imageLoader,
-                                                        isSelected = index == contentIndex && focus == PanelFocus.CONTENT,
-                                                        isCurrent = isCurrent,
-                                                        accentColor = accentColor
-                                                    )
-                                                }
-                                            }
-                                            PanelLevel.CATEGORIES -> {
-                                                itemsIndexed(activeCategories) { index, cat ->
-                                                    CategoryRow(
-                                                        name = cat,
-                                                        count = activeGrouped[cat]?.size ?: 0,
-                                                        isSelected = index == contentIndex && focus == PanelFocus.CONTENT,
-                                                        accentColor = accentColor
-                                                    )
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        // Favoritos
-                        2 -> {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .focusRequester(contentFR)
-                                    .focusable()
-                                    .onKeyEvent { event ->
-                                        if (event.nativeKeyEvent.action == KeyEvent.ACTION_DOWN && focus == PanelFocus.CONTENT) {
-                                            when (event.nativeKeyEvent.keyCode) {
-                                                KeyEvent.KEYCODE_BACK, KeyEvent.KEYCODE_DPAD_LEFT -> {
-                                                    focus = PanelFocus.TABS
-                                                    true
-                                                }
-                                                KeyEvent.KEYCODE_DPAD_UP -> {
-                                                    if (contentIndex > 0) {
-                                                        contentIndex--
-                                                        scope.launch {
-                                                            contentListState.animateScrollToItem(
-                                                                (contentIndex - 2).coerceAtLeast(0)
-                                                            )
-                                                        }
-                                                    }
-                                                    true
-                                                }
-                                                KeyEvent.KEYCODE_DPAD_DOWN -> {
-                                                    if (contentIndex < favoriteItems.size - 1) {
-                                                        contentIndex++
-                                                        scope.launch {
-                                                            contentListState.animateScrollToItem(
-                                                                (contentIndex - 2).coerceAtLeast(0)
-                                                            )
-                                                        }
-                                                    }
-                                                    true
-                                                }
-                                                KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
-                                                    val fav = favoriteItems.getOrNull(contentIndex)
-                                                    if (fav != null) onItemSelect(fav.itemType, fav.listIndex)
-                                                    true
-                                                }
-                                                else -> false
-                                            }
-                                        } else false
-                                    }
-                            ) {
-                                Column(
-                                    modifier = Modifier
-                                        .fillMaxSize()
-                                        .padding(12.dp)
-                                ) {
-                                    Row(
-                                        modifier = Modifier.padding(vertical = 8.dp),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Icon(Icons.Default.Favorite, null, tint = PinkGlow, modifier = Modifier.size(18.dp))
-                                        Spacer(modifier = Modifier.width(8.dp))
-                                        Text("Favoritos", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = TextPrimary)
-                                        if (favoriteItems.isNotEmpty()) {
-                                            Spacer(modifier = Modifier.width(6.dp))
-                                            Box(
-                                                modifier = Modifier
-                                                    .clip(RoundedCornerShape(6.dp))
-                                                    .background(PinkGlow.copy(alpha = 0.15f))
-                                                    .padding(horizontal = 6.dp, vertical = 2.dp)
-                                            ) {
-                                                Text("${favoriteItems.size}", fontSize = 10.sp, fontWeight = FontWeight.SemiBold, color = PinkGlow)
-                                            }
-                                        }
-                                    }
-
-                                    if (favoriteItems.isEmpty()) {
-                                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                                Icon(Icons.Default.FavoriteBorder, null, tint = TextMuted, modifier = Modifier.size(40.dp))
-                                                Spacer(modifier = Modifier.height(8.dp))
-                                                Text("Sin favoritos", fontSize = 14.sp, color = TextPrimary)
-                                                Text("Agregá desde la app móvil", fontSize = 12.sp, color = TextMuted)
-                                            }
-                                        }
-                                    } else {
-                                        LazyColumn(
-                                            state = contentListState,
-                                            verticalArrangement = Arrangement.spacedBy(3.dp),
-                                            modifier = Modifier.fillMaxSize()
-                                        ) {
-                                            itemsIndexed(favoriteItems) { index, item ->
-                                                val isCurrent = item.listIndex == currentIndex && item.itemType == contentType
-                                                val ac = if (item.itemType == "channel") CyanGlow else PurpleGlow
-                                                ItemRow(
-                                                    number = item.listIndex + 1,
-                                                    name = item.name,
-                                                    logoUrl = item.imageUrl,
-                                                    imageLoader = imageLoader,
-                                                    isSelected = index == contentIndex && focus == PanelFocus.CONTENT,
-                                                    isCurrent = isCurrent,
-                                                    accentColor = ac,
-                                                    badge = if (item.itemType == "channel") "TV" else "FM"
-                                                )
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        // Buscar
-                        3 -> {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .padding(12.dp)
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(vertical = 8.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Icon(Icons.Default.Search, null, tint = GreenGlow, modifier = Modifier.size(18.dp))
-                                    Spacer(modifier = Modifier.width(8.dp))
-                                    Text("Buscar", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = TextPrimary)
-                                }
-
-                                OutlinedTextField(
-                                    value = searchQuery,
-                                    onValueChange = { searchQuery = it; contentIndex = 0 },
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .height(48.dp)
-                                        .focusRequester(searchInputFR)
-                                        .onPreviewKeyEvent { event ->
-                                            if (event.nativeKeyEvent.action == KeyEvent.ACTION_DOWN) {
-                                                when (event.nativeKeyEvent.keyCode) {
-                                                    KeyEvent.KEYCODE_DPAD_DOWN -> {
-                                                        if (searchResults.isNotEmpty()) {
-                                                            searchFocusOnInput = false
-                                                            focus = PanelFocus.CONTENT
-                                                        }
-                                                        true
-                                                    }
-                                                    KeyEvent.KEYCODE_BACK -> {
-                                                        focus = PanelFocus.TABS
-                                                        true
-                                                    }
-                                                    else -> false
-                                                }
-                                            } else false
-                                        },
-                                    placeholder = {
-                                        androidx.compose.material3.Text("Buscar canales o radios...", color = TextMuted)
-                                    },
-                                    leadingIcon = {
-                                        androidx.compose.material3.Icon(Icons.Default.Search, null, tint = GreenGlow)
-                                    },
-                                    trailingIcon = {
-                                        if (searchQuery.isNotEmpty()) {
-                                            androidx.compose.material3.IconButton(onClick = { searchQuery = "" }) {
-                                                androidx.compose.material3.Icon(Icons.Default.Close, "Limpiar", tint = TextMuted)
-                                            }
-                                        }
-                                    },
-                                    colors = OutlinedTextFieldDefaults.colors(
-                                        focusedContainerColor = CardBackground,
-                                        unfocusedContainerColor = CardBackground,
-                                        focusedBorderColor = GreenGlow,
-                                        unfocusedBorderColor = CardBorder,
-                                        focusedTextColor = TextPrimary,
-                                        unfocusedTextColor = TextPrimary,
-                                        cursorColor = GreenGlow
-                                    ),
-                                    shape = RoundedCornerShape(10.dp),
-                                    singleLine = true,
-                                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search)
-                                )
-
-                                Spacer(modifier = Modifier.height(8.dp))
-
-                                when {
-                                    searchQuery.isBlank() -> {
-                                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                                Icon(Icons.Default.Search, null, tint = TextMuted, modifier = Modifier.size(40.dp))
-                                                Spacer(modifier = Modifier.height(6.dp))
-                                                Text("Escribí para buscar", fontSize = 13.sp, color = TextMuted)
-                                            }
-                                        }
-                                    }
-                                    searchResults.isEmpty() -> {
-                                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                            Text("Sin resultados para \"$searchQuery\"", fontSize = 13.sp, color = TextMuted)
-                                        }
-                                    }
-                                    else -> {
-                                        Text(
-                                            "${searchResults.size} resultado${if (searchResults.size != 1) "s" else ""}",
-                                            fontSize = 11.sp, color = TextMuted,
-                                            modifier = Modifier.padding(bottom = 6.dp)
-                                        )
-
-                                        Box(
-                                            modifier = Modifier
-                                                .fillMaxSize()
-                                                .focusRequester(searchResultsFR)
-                                                .focusable()
-                                                .onKeyEvent { event ->
-                                                    if (event.nativeKeyEvent.action == KeyEvent.ACTION_DOWN && focus == PanelFocus.CONTENT && !searchFocusOnInput) {
-                                                        when (event.nativeKeyEvent.keyCode) {
-                                                            KeyEvent.KEYCODE_DPAD_UP -> {
-                                                                if (contentIndex > 0) {
-                                                                    contentIndex--
-                                                                    scope.launch { contentListState.animateScrollToItem((contentIndex - 2).coerceAtLeast(0)) }
-                                                                } else {
-                                                                    searchFocusOnInput = true
-                                                                }
-                                                                true
-                                                            }
-                                                            KeyEvent.KEYCODE_DPAD_DOWN -> {
-                                                                if (contentIndex < searchResults.size - 1) {
-                                                                    contentIndex++
-                                                                    scope.launch { contentListState.animateScrollToItem((contentIndex - 2).coerceAtLeast(0)) }
-                                                                }
-                                                                true
-                                                            }
-                                                            KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
-                                                                val sr = searchResults.getOrNull(contentIndex)
-                                                                if (sr != null) onItemSelect(sr.itemType, sr.listIndex)
-                                                                true
-                                                            }
-                                                            KeyEvent.KEYCODE_BACK, KeyEvent.KEYCODE_DPAD_LEFT -> {
-                                                                searchFocusOnInput = true
-                                                                true
-                                                            }
-                                                            else -> false
-                                                        }
-                                                    } else false
-                                                }
-                                        ) {
-                                            LazyColumn(
-                                                state = contentListState,
-                                                verticalArrangement = Arrangement.spacedBy(3.dp),
-                                                modifier = Modifier.fillMaxSize()
-                                            ) {
-                                                itemsIndexed(searchResults) { index, result ->
-                                                    val isCurrent = result.listIndex == currentIndex && result.itemType == contentType
-                                                    val ac = if (result.itemType == "channel") CyanGlow else PurpleGlow
-                                                    ItemRow(
-                                                        number = result.listIndex + 1,
-                                                        name = result.name,
-                                                        logoUrl = result.imageUrl,
-                                                        imageLoader = imageLoader,
-                                                        isSelected = index == contentIndex && focus == PanelFocus.CONTENT && !searchFocusOnInput,
-                                                        isCurrent = isCurrent,
-                                                        accentColor = ac,
-                                                        badge = if (result.itemType == "channel") "TV" else "FM"
-                                                    )
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+                PanelContentBox(
+                    tabIndex = tabIndex,
+                    focus = focus,
+                    contentIndex = contentIndex,
+                    panelLevel = panelLevel,
+                    selectedCategory = selectedCategory,
+                    searchQuery = searchQuery,
+                    searchFocusOnInput = searchFocusOnInput,
+                    currentIndex = currentIndex,
+                    contentType = contentType,
+                    channels = channels,
+                    stations = stations,
+                    favoriteItems = favoriteItems,
+                    searchResults = searchResults,
+                    displayItems = displayItems,
+                    activeCategories = activeCategories,
+                    activeGrouped = activeGrouped,
+                    contentListState = contentListState,
+                    contentFR = contentFR,
+                    searchInputFR = searchInputFR,
+                    searchResultsFR = searchResultsFR,
+                    imageLoader = imageLoader,
+                    livePulseAlpha = livePulseAlpha,
+                    scope = scope,
+                    onContentIndexChange = { contentIndex = it },
+                    onPanelLevelChange = { panelLevel = it },
+                    onSelectedCategoryChange = { selectedCategory = it },
+                    onFocusChange = { focus = it },
+                    onSearchQueryChange = { searchQuery = it },
+                    onSearchFocusOnInputChange = { searchFocusOnInput = it },
+                    onItemSelect = onItemSelect
+                )
             }
         }
     }
 }
+
 
 // ============================================================
 // Tab item
 // ============================================================
 
 @Composable
-private fun TabItem(
+internal fun TabItem(
     icon: ImageVector,
     label: String,
     color: Color,
-    isSelected: Boolean,
-    isActive: Boolean,
-    isNowPlaying: Boolean
+    tabIndex: Int,
+    currentTabIndex: Int,
+    focus: PanelFocus,
+    isNowPlaying: Boolean,
+    livePulseAlpha: Float
 ) {
+    // derivedStateOf: only this item re-evaluates when tabIndex/focus change
+    val isSelected by remember { derivedStateOf { tabIndex == currentTabIndex && focus == PanelFocus.TABS } }
+    val isActive   by remember { derivedStateOf { tabIndex == currentTabIndex } }
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -1365,7 +828,7 @@ private fun TabItem(
             color = if (isSelected || isActive) color else TextSecondary,
             modifier = Modifier.weight(1f)
         )
-        if (isNowPlaying) { LiveIndicator() }
+        if (isNowPlaying) { LiveIndicator(alpha = livePulseAlpha) }
     }
 }
 
@@ -1374,12 +837,16 @@ private fun TabItem(
 // ============================================================
 
 @Composable
-private fun CategoryRow(
+internal fun CategoryRow(
     name: String,
     count: Int,
-    isSelected: Boolean,
+    index: Int,
+    contentIndex: Int,
+    focus: PanelFocus,
     accentColor: Color
 ) {
+    val isSelected by remember { derivedStateOf { index == contentIndex && focus == PanelFocus.CONTENT } }
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -1431,16 +898,24 @@ private fun CategoryRow(
 // ============================================================
 
 @Composable
-private fun ItemRow(
+internal fun ItemRow(
     number: Int,
     name: String,
     logoUrl: String?,
     imageLoader: ImageLoader,
-    isSelected: Boolean,
+    index: Int,
+    contentIndex: Int,
+    focus: PanelFocus,
     isCurrent: Boolean,
     accentColor: Color,
-    badge: String? = null
+    badge: String? = null,
+    searchFocusOnInput: Boolean = false,
+    livePulseAlpha: Float = 1f
 ) {
+    val isSelected by remember {
+        derivedStateOf { index == contentIndex && focus == PanelFocus.CONTENT && !searchFocusOnInput }
+    }
+
     val bg = when {
         isSelected -> accentColor.copy(alpha = 0.2f)
         isCurrent -> OrangeGlow.copy(alpha = 0.1f)
@@ -1502,7 +977,7 @@ private fun ItemRow(
         }
         if (isCurrent) {
             Spacer(modifier = Modifier.width(4.dp))
-            LiveIndicator()
+            LiveIndicator(alpha = livePulseAlpha)
         }
     }
 }
@@ -1529,19 +1004,18 @@ private fun PlayerLoadingContent() {
 // Video player content
 // ============================================================
 
-@OptIn(UnstableApi::class)
 @Composable
 private fun VideoPlayerContent(
-    exoPlayer: ExoPlayer, title: String, category: String,
+    mediaPlayer: MediaPlayer?, title: String, category: String,
     isPlaying: Boolean, showControls: Boolean, currentIndex: Int, totalItems: Int
 ) {
+    if (mediaPlayer == null) return
+    val livePulseAlpha = rememberLivePulseAlpha()
     Box(modifier = Modifier.fillMaxSize()) {
         AndroidView(
             factory = { ctx ->
-                PlayerView(ctx).apply {
-                    player = exoPlayer
-                    useController = false
-                    layoutParams = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+                VLCVideoLayout(ctx).also { layout ->
+                    mediaPlayer.attachViews(layout, null, false, false)
                 }
             },
             modifier = Modifier.fillMaxSize()
@@ -1565,7 +1039,7 @@ private fun VideoPlayerContent(
                         }
                         Spacer(modifier = Modifier.height(8.dp))
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                            LiveIndicator()
+                            LiveIndicator(alpha = livePulseAlpha)
                             Text("En vivo", fontSize = 14.sp, color = Color.White.copy(0.8f))
                             if (category.isNotEmpty()) {
                                 Text("•", fontSize = 14.sp, color = Color.White.copy(0.5f))
@@ -1593,13 +1067,19 @@ private fun VideoPlayerContent(
 
 @Composable
 private fun AudioPlayerContent(
-    exoPlayer: ExoPlayer, title: String, isPlaying: Boolean, currentIndex: Int, totalItems: Int
+    mediaPlayer: MediaPlayer?, title: String, isPlaying: Boolean, currentIndex: Int, totalItems: Int
 ) {
+    if (mediaPlayer == null) return
+    // Only animate when actually playing — saves CPU when paused
     val inf = rememberInfiniteTransition(label = "a")
     val w1 by inf.animateFloat(0.3f, 1f, infiniteRepeatable(tween(800, easing = EaseInOutSine), RepeatMode.Reverse), label = "w1")
     val w2 by inf.animateFloat(0.5f, 0.8f, infiniteRepeatable(tween(600, easing = EaseInOutSine), RepeatMode.Reverse), label = "w2")
     val w3 by inf.animateFloat(0.4f, 0.9f, infiniteRepeatable(tween(1000, easing = EaseInOutSine), RepeatMode.Reverse), label = "w3")
-    val ps by inf.animateFloat(1f, 1.05f, infiniteRepeatable(tween(1500, easing = EaseInOutSine), RepeatMode.Reverse), label = "p")
+    val ps by inf.animateFloat(
+        initialValue = 1f, targetValue = if (isPlaying) 1.05f else 1f,
+        animationSpec = infiniteRepeatable(tween(1500, easing = EaseInOutSine), RepeatMode.Reverse),
+        label = "p"
+    )
 
     Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(DarkBackground, DarkSurface, DarkBackground)))) {
         Box(Modifier.size(400.dp).offset((-150).dp, 100.dp).background(Brush.radialGradient(listOf(PurpleGlow.copy(0.1f), Color.Transparent))))
@@ -1656,10 +1136,16 @@ private fun AudioPlayerContent(
 // Live indicator
 // ============================================================
 
+// Single shared transition — hoisted to avoid one per item
 @Composable
-private fun LiveIndicator() {
+private fun rememberLivePulseAlpha(): Float {
     val inf = rememberInfiniteTransition(label = "live")
     val alpha by inf.animateFloat(1f, 0.3f, infiniteRepeatable(tween(800), RepeatMode.Reverse), label = "pulse")
+    return alpha
+}
+
+@Composable
+private fun LiveIndicator(alpha: Float) {
     Box(Modifier.size(10.dp).clip(CircleShape).background(Color.Red.copy(alpha)))
 }
 

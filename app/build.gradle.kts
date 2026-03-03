@@ -92,15 +92,8 @@ dependencies {
     implementation(libs.coil)
     implementation(libs.coil.svg)
     
-    // Media playback - Full streaming support
-    implementation(libs.media3.exoplayer)
-    implementation(libs.media3.exoplayer.hls)          // HLS / M3U8
-    implementation(libs.media3.exoplayer.dash)         // DASH / MPD
-    implementation(libs.media3.exoplayer.smoothstreaming) // Microsoft Smooth Streaming
-    implementation(libs.media3.exoplayer.rtsp)         // RTSP streams
-    implementation(libs.media3.datasource.okhttp)      // Better HTTP handling
-    implementation(libs.media3.ui)
-    implementation(libs.media3.ui.leanback)
+    // Media playback - VLC (full codec support: MP2, AC3, EAC3, H264, H265, HLS, RTSP, everything)
+    implementation(libs.libvlc)
     
     // Data storage
     implementation(libs.androidx.datastore)
